@@ -6,21 +6,19 @@ image. No side effects.
 
 Approach:
     1. Quantize the image down to ~16 dominant colors with weights.
-    2. Pick a "mood" neutral from the most prominent color - its hue
+    2. Pick the primary accent: the most saturated candidate. Done
+       first so semantic roles can exclude it.
+    3. Pick a "mood" neutral from the most prominent color - its hue
        tints every background and foreground, but chroma is clamped
        low so text stays readable.
-    3. Build neutrals (backgrounds, surfaces, foregrounds) at fixed
+    4. Build neutrals (backgrounds, surfaces, foregrounds) at fixed
        lightness targets, then push them toward WCAG contrast floors.
-    4. Assign the 9 accent roles by nearest-hue matching against
-       fixed hue anchors (red=25, green=145, etc.).
-    5. Pick a primary accent from the assigned blues (most common
-       blue-ish anchor in practice; falls back to the most saturated
-       candidate).
+    5. Assign the 9 semantic/extras roles by nearest-hue matching
+       against fixed anchors (red=25, green=145, etc.), excluding
+       the accent. If nothing in the image is close to an anchor,
+       synthesize from the anchor so semantic roles stay semantic.
     6. Choose accent_text by whichever of black/white contrasts
        better on accent.
-
-If two roles would pick the same source color, the second one gets
-the next best candidate. Colors already used are excluded.
 """
 
 from __future__ import annotations
@@ -46,6 +44,12 @@ HUE_ANCHORS: dict[str, float] = {
     "pink":   350.0,
     "sky":    220.0,
 }
+
+# If the closest candidate for a role is more than this many degrees
+# off its target hue, synthesize the color at the anchor instead of
+# using a poor match. Keeps semantic roles recognizable on
+# monochromatic wallpapers.
+HUE_SYNTHESIS_THRESHOLD: float = 50.0
 
 # Lightness targets for the neutral ramp. Chosen so that text/base,
 # subtext/base, etc. have a fighting chance at passing contrast
@@ -105,55 +109,57 @@ def _quantize(image_path: Path, n: int = 16, sample: int = 200
 # Accent assignment
 # ---------------------------------------------------------------------
 
-def _score_accent(hex_c: str, weight: float,
-                  target_hue: float,
-                  target_chroma: float = 0.15) -> float:
-    """Lower is better. Balance hue match, chroma, and prominence."""
-    _, chroma, hue = C.hex_to_oklch(hex_c)
-    hue_cost = C.hue_distance(hue, target_hue) / 180.0   # 0..1
-    chroma_cost = abs(chroma - target_chroma)
-    prominence_bonus = 0.3 * weight
-    return 3.0 * hue_cost + 1.0 * chroma_cost - prominence_bonus
-
-
-def _assign_accents(candidates: list[tuple[str, float]]
+def _assign_accents(candidates: list[tuple[str, float]],
+                    exclude: set[str] | None = None,
+                    hue_threshold: float = HUE_SYNTHESIS_THRESHOLD,
                     ) -> dict[str, str]:
-    """Pick one source color per accent role. Never reuses a color."""
-    used: set[str] = set()
+    """Pick one source color per semantic role. Never reuses a color.
+
+    `exclude` is a set of hexes already assigned elsewhere (typically
+    just the primary accent). Colors in it are skipped.
+
+    If the closest available candidate is more than `hue_threshold`
+    degrees from the role's target hue, synthesize at the anchor
+    instead. This keeps red red, green green, etc. even when the
+    image has only one hue.
+    """
+    used: set[str] = set(exclude or ())
     assigned: dict[str, str] = {}
 
-    for role, hue in HUE_ANCHORS.items():
+    for role, target_hue in HUE_ANCHORS.items():
         best: str | None = None
-        best_score = float("inf")
+        best_cost = float("inf")
+        best_hue_dist = 999.0
+
         for hex_c, weight in candidates:
             if hex_c in used:
                 continue
-            score = _score_accent(hex_c, weight, hue)
-            if score < best_score:
-                best, best_score = hex_c, score
-        if best is None:
-            # Ran out of distinct colors; synthesize from the anchor.
-            best = C.oklch_to_hex(0.65, 0.15, hue)
+            _, chroma, hue = C.hex_to_oklch(hex_c)
+            hd = C.hue_distance(hue, target_hue)
+            cost = 3.0 * (hd / 180.0) + 1.0 * abs(chroma - 0.15) - 0.3 * weight
+            if cost < best_cost:
+                best = hex_c
+                best_cost = cost
+                best_hue_dist = hd
+
+        if best is None or best_hue_dist > hue_threshold:
+            # Nothing close enough in the image. Synthesize at the
+            # anchor so the role is visually recognizable.
+            best = C.oklch_to_hex(0.62, 0.13, target_hue)
+
         used.add(best)
         assigned[role] = best
 
     return assigned
 
 
-def _pick_primary_accent(assigned: dict[str, str],
-                         candidates: list[tuple[str, float]]) -> str:
-    """The primary accent is what most apps highlight with.
+def _pick_primary_accent(candidates: list[tuple[str, float]]) -> str:
+    """Pick the primary accent from the raw candidates.
 
-    Preference order:
-        1. The 'blue' slot if it exists and is reasonably saturated.
-        2. Otherwise, the most saturated color from the whole image.
+    Called before semantic roles are assigned, so no color is used
+    twice. The most saturated candidate wins; if the image is grey,
+    fall back to the built-in default.
     """
-    blue = assigned.get("blue")
-    if blue:
-        _, chroma, _ = C.hex_to_oklch(blue)
-        if chroma >= 0.08:
-            return blue
-
     best, best_chroma = None, -1.0
     for hex_c, _ in candidates:
         _, chroma, _ = C.hex_to_oklch(hex_c)
@@ -212,33 +218,13 @@ def _apply_contrast_floors(neutrals: dict[str, str]) -> dict[str, str]:
 # Public
 # ---------------------------------------------------------------------
 
-def build_theme(image_path: str | Path) -> Theme:
-    """Read an image and return a Theme.
-
-    Raises FileNotFoundError if the image is missing, or PIL.UnidentifiedImageError
-    if it cannot be decoded. Callers should catch and log.
-    """
-    image_path = Path(image_path)
-    if not image_path.exists():
-        raise FileNotFoundError(image_path)
-
-    candidates = _quantize(image_path, n=16)
-    if not candidates:
-        raise RuntimeError(f"no colors extracted from {image_path}")
-
-    # Mood = the most prominent color's hue, with a lightness-weighted
-    # chroma. A grey image still produces a Theme; its neutrals just
-    # come out near-grey.
-    dominant_hex, _ = candidates[0]
-    _, dominant_chroma, dominant_hue = C.hex_to_oklch(dominant_hex)
-
-    neutrals = _neutral_ramp(dominant_hue, dominant_chroma)
-    neutrals = _apply_contrast_floors(neutrals)
-
-    accents = _assign_accents(candidates)
-    accent = _pick_primary_accent(accents, candidates)
-    accent_text = _accent_text(accent)
-
+def _assemble(neutrals: dict[str, str],
+              accents: dict[str, str],
+              accent: str,
+              accent_text: str,
+              ) -> Theme:
+    """Build the Theme from resolved pieces. Shared by both entry
+    points so the field mapping lives in exactly one place."""
     return Theme(
         base=neutrals["base"],
         mantle=neutrals["mantle"],
@@ -264,6 +250,41 @@ def build_theme(image_path: str | Path) -> Theme:
         pink=accents["pink"],
         sky=accents["sky"],
     )
+
+
+def _from_candidates(candidates: list[tuple[str, float]]) -> Theme:
+    """Shared pipeline: candidates -> Theme. Both public entry points
+    end up here."""
+    dominant_hex, _ = candidates[0]
+    _, dominant_chroma, dominant_hue = C.hex_to_oklch(dominant_hex)
+
+    neutrals = _neutral_ramp(dominant_hue, dominant_chroma)
+    neutrals = _apply_contrast_floors(neutrals)
+
+    # Accent first so semantic roles can exclude it.
+    accent = _pick_primary_accent(candidates)
+    accents = _assign_accents(candidates, exclude={accent})
+    accent_text = _accent_text(accent)
+
+    return _assemble(neutrals, accents, accent, accent_text)
+
+
+def build_theme(image_path: str | Path) -> Theme:
+    """Read an image and return a Theme.
+
+    Raises FileNotFoundError if the image is missing, or
+    PIL.UnidentifiedImageError if it cannot be decoded. Callers
+    should catch and log.
+    """
+    image_path = Path(image_path)
+    if not image_path.exists():
+        raise FileNotFoundError(image_path)
+
+    candidates = _quantize(image_path, n=16)
+    if not candidates:
+        raise RuntimeError(f"no colors extracted from {image_path}")
+
+    return _from_candidates(candidates)
 
 
 def build_theme_from_hexes(hexes: list[str]) -> Theme:
@@ -278,38 +299,4 @@ def build_theme_from_hexes(hexes: list[str]) -> Theme:
         # Weight linearly decreasing; order is assumed to be relevance.
         candidates.append((h, (n - i) / n))
 
-    dominant_hex, _ = candidates[0]
-    _, dominant_chroma, dominant_hue = C.hex_to_oklch(dominant_hex)
-
-    neutrals = _neutral_ramp(dominant_hue, dominant_chroma)
-    neutrals = _apply_contrast_floors(neutrals)
-
-    accents = _assign_accents(candidates)
-    accent = _pick_primary_accent(accents, candidates)
-    accent_text = _accent_text(accent)
-
-    return Theme(
-        base=neutrals["base"],
-        mantle=neutrals["mantle"],
-        crust=neutrals["crust"],
-        surface0=neutrals["surface0"],
-        surface1=neutrals["surface1"],
-        surface2=neutrals["surface2"],
-        overlay0=neutrals["overlay0"],
-        overlay1=neutrals["overlay1"],
-        overlay2=neutrals["overlay2"],
-        text=neutrals["text"],
-        subtext0=neutrals["subtext0"],
-        subtext1=neutrals["subtext1"],
-        accent=accent,
-        accent_text=accent_text,
-        red=accents["red"],
-        green=accents["green"],
-        yellow=accents["yellow"],
-        blue=accents["blue"],
-        mauve=accents["mauve"],
-        teal=accents["teal"],
-        peach=accents["peach"],
-        pink=accents["pink"],
-        sky=accents["sky"],
-    )
+    return _from_candidates(candidates)
