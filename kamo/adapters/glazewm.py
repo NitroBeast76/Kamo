@@ -129,59 +129,78 @@ class GlazewmAdapter(Adapter):
     # ------------------------------------------------------------------
 
     def _rewrite(self, text: str, resolved: dict[str, str]) -> tuple[str, int]:
-        """Replace `color:` lines under each tracked section.
+        """Replace `color:` lines under each tracked anchor.
 
-        Walks the file line by line, tracking the current section by
-        the last top-level key seen inside window_effects. Replaces
-        the first `color:` line found in each tracked section, then
-        stops tracking that section.
+        Tracks state by indentation, not by "last key seen":
+
+        - `window_effects:` enters the region. Its indent is remembered.
+        - The first key one level deeper is the "child indent", where
+            `focused_window` and `other_windows` sit.
+        - Keys at exactly child indent set the current anchor.
+        - Keys at deeper indent (like `border:` inside `focused_window`)
+            are nested and do NOT change the current anchor.
+        - Any key at window_effects' indent or above exits the region.
+
+        Without this, `border:` would clear the anchor and the `color:`
+        line inside it would never be replaced.
         """
         lines = text.splitlines()
         out: list[str] = []
-        current_section: str | None = None
+        we_indent = -1          # -1 = not inside window_effects
+        child_indent = -1       # not yet known
+        current_anchor: str | None = None
         replaced: set[str] = set()
         changes = 0
 
         for line in lines:
-            m_section = re.match(r"^(\s*)window_effects:\s*$", line)
-            if m_section:
-                current_section = None
-                out.append(line)
-                continue
+            # Structural lines: "key:", "key: value", "key:" nested.
+            m_key = re.match(r"^(\s*)([A-Za-z_][\w-]*):", line)
 
-            # Inside window_effects, look for section keys.
-            m_key = re.match(r"^(\s+)(\w+):\s*$", line)
-            if m_key and current_section is None:
-                candidate = m_key.group(2)
-                if candidate in resolved:
-                    current_section = candidate
-                out.append(line)
-                continue
             if m_key:
-                # A new section key at the same or lower indent ends
-                # the previous one.
-                candidate = m_key.group(2)
-                if candidate in resolved:
-                    current_section = candidate
-                else:
-                    current_section = None
-                out.append(line)
-                continue
+                indent = len(m_key.group(1))
+                key = m_key.group(2)
 
-            # Color line in a tracked section.
-            m_color = _COLOR_LINE.match(line)
-            if m_color and current_section and current_section not in replaced:
-                new_hex = resolved[current_section]
-                quote = m_color.group("quote")
-                indent = m_color.group("indent")
-                out.append(f"{indent}color: {quote}{new_hex}{quote}")
-                replaced.add(current_section)
-                changes += 1
-                continue
+                # Entering window_effects.
+                if key == "window_effects" and indent == len(line) - len(line.lstrip()):
+                    # Only treat it as the section header if the line
+                    # has no value after the colon.
+                    if re.match(r"^\s*window_effects:\s*$", line):
+                        we_indent = indent
+                        child_indent = -1
+                        current_anchor = None
+                        out.append(line)
+                        continue
+
+                # Exiting window_effects (top-level key at same or
+                # lower indent).
+                if we_indent >= 0 and indent <= we_indent:
+                    we_indent = -1
+                    child_indent = -1
+                    current_anchor = None
+                    out.append(line)
+                    continue
+
+                # Inside window_effects: anchor selection by indent.
+                if we_indent >= 0:
+                    if child_indent < 0:
+                        child_indent = indent
+                    if indent == child_indent:
+                        current_anchor = key if key in resolved else None
+
+            # Color line in a tracked anchor.
+            if current_anchor and current_anchor not in replaced:
+                m_color = _COLOR_LINE.match(line)
+                if m_color:
+                    new_hex = resolved[current_anchor]
+                    quote = m_color.group("quote")
+                    indent_str = m_color.group("indent")
+                    out.append(f"{indent_str}color: {quote}{new_hex}{quote}")
+                    replaced.add(current_anchor)
+                    changes += 1
+                    continue
 
             out.append(line)
 
-        # Preserve trailing newline behaviour. GlazeWM's file ends in \n.
         joined = "\n".join(out)
         if text.endswith("\n") and not joined.endswith("\n"):
             joined += "\n"
