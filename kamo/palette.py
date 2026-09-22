@@ -6,8 +6,9 @@ image. No side effects.
 
 Approach:
     1. Quantize the image down to ~16 dominant colors with weights.
-    2. Pick the primary accent: the most saturated candidate. Done
-       first so semantic roles can exclude it.
+    2. Pick the primary accent: the most saturated candidate, then
+       clamp it into a usable accent band. Done first so semantic
+       roles can exclude it.
     3. Pick a "mood" neutral from the most prominent color - its hue
        tints every background and foreground, but chroma is clamped
        low so text stays readable.
@@ -16,7 +17,9 @@ Approach:
     5. Assign the 9 semantic/extras roles by nearest-hue matching
        against fixed anchors (red=25, green=145, etc.), excluding
        the accent. If nothing in the image is close to an anchor,
-       synthesize from the anchor so semantic roles stay semantic.
+       synthesize from the anchor. Otherwise, clamp the matched
+       color into a usable accent band so dark wallpapers still
+       produce visible highlights.
     6. Choose accent_text by whichever of black/white contrasts
        better on accent.
 """
@@ -50,6 +53,13 @@ HUE_ANCHORS: dict[str, float] = {
 # using a poor match. Keeps semantic roles recognizable on
 # monochromatic wallpapers.
 HUE_SYNTHESIS_THRESHOLD: float = 50.0
+
+# Usable accent band. Any color pulled from the image for a semantic
+# or primary role gets clamped into this range, so highlights stay
+# readable against a dark base and don't blow out against a light one.
+ACCENT_MIN_L: float = 0.55
+ACCENT_MAX_L: float = 0.85
+ACCENT_MIN_C: float = 0.10
 
 # Lightness targets for the neutral ramp. Chosen so that text/base,
 # subtext/base, etc. have a fighting chance at passing contrast
@@ -109,6 +119,29 @@ def _quantize(image_path: Path, n: int = 16, sample: int = 200
 # Accent assignment
 # ---------------------------------------------------------------------
 
+def _usable_accent(hex_c: str,
+                   min_L: float = ACCENT_MIN_L,
+                   max_L: float = ACCENT_MAX_L,
+                   min_C: float = ACCENT_MIN_C) -> str:
+    """Nudge a picked color into a band that reads as a usable accent.
+
+    Hue is preserved. Lightness is clamped into [min_L, max_L] if
+    outside. Chroma is raised to min_C if too low. Colors already
+    inside the band are returned unchanged.
+
+    This is what makes a dark wallpaper produce visible accents: a
+    mauve that lives at L=0.24 in the image is technically correct,
+    but against a base at L=0.16 it disappears. Clamping to L>=0.55
+    keeps the hue but makes the role functional.
+    """
+    L, chroma, H = C.hex_to_oklch(hex_c)
+    new_L = max(min_L, min(max_L, L))
+    new_C = max(min_C, chroma)
+    if new_L == L and new_C == chroma:
+        return hex_c
+    return C.oklch_to_hex(new_L, new_C, H)
+
+
 def _assign_accents(candidates: list[tuple[str, float]],
                     exclude: set[str] | None = None,
                     hue_threshold: float = HUE_SYNTHESIS_THRESHOLD,
@@ -120,14 +153,14 @@ def _assign_accents(candidates: list[tuple[str, float]],
 
     If the closest available candidate is more than `hue_threshold`
     degrees from the role's target hue, synthesize at the anchor
-    instead. This keeps red red, green green, etc. even when the
-    image has only one hue.
+    instead. Otherwise, take the best candidate and clamp it into a
+    usable accent band so it doesn't come back nearly black.
     """
     used: set[str] = set(exclude or ())
     assigned: dict[str, str] = {}
 
     for role, target_hue in HUE_ANCHORS.items():
-        best: str | None = None
+        best_raw: str | None = None
         best_cost = float("inf")
         best_hue_dist = 999.0
 
@@ -138,17 +171,20 @@ def _assign_accents(candidates: list[tuple[str, float]],
             hd = C.hue_distance(hue, target_hue)
             cost = 3.0 * (hd / 180.0) + 1.0 * abs(chroma - 0.15) - 0.3 * weight
             if cost < best_cost:
-                best = hex_c
+                best_raw = hex_c
                 best_cost = cost
                 best_hue_dist = hd
 
-        if best is None or best_hue_dist > hue_threshold:
+        if best_raw is None or best_hue_dist > hue_threshold:
             # Nothing close enough in the image. Synthesize at the
             # anchor so the role is visually recognizable.
-            best = C.oklch_to_hex(0.62, 0.13, target_hue)
+            result = C.oklch_to_hex(0.62, 0.13, target_hue)
+        else:
+            result = _usable_accent(best_raw)
+            used.add(best_raw)  # never pick this raw candidate again
 
-        used.add(best)
-        assigned[role] = best
+        used.add(result)  # also block the clamped form
+        assigned[role] = result
 
     return assigned
 
@@ -157,15 +193,18 @@ def _pick_primary_accent(candidates: list[tuple[str, float]]) -> str:
     """Pick the primary accent from the raw candidates.
 
     Called before semantic roles are assigned, so no color is used
-    twice. The most saturated candidate wins; if the image is grey,
-    fall back to the built-in default.
+    twice. The most saturated candidate wins, then gets clamped into
+    the same usable accent band as the semantic roles. Falls back to
+    the built-in default if the image is pure grey.
     """
     best, best_chroma = None, -1.0
     for hex_c, _ in candidates:
         _, chroma, _ = C.hex_to_oklch(hex_c)
         if chroma > best_chroma:
             best, best_chroma = hex_c, chroma
-    return best or "#89b4fa"
+    if best is None:
+        return "#89b4fa"
+    return _usable_accent(best)
 
 
 def _accent_text(accent: str) -> str:
