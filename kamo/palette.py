@@ -189,13 +189,17 @@ def _assign_accents(candidates: list[tuple[str, float]],
     return assigned
 
 
-def _pick_primary_accent(candidates: list[tuple[str, float]]) -> str:
+def _pick_primary_accent(
+    candidates: list[tuple[str, float]],
+) -> tuple[str | None, str]:
     """Pick the primary accent from the raw candidates.
 
-    Called before semantic roles are assigned, so no color is used
-    twice. The most saturated candidate wins, then gets clamped into
-    the same usable accent band as the semantic roles. Falls back to
-    the built-in default if the image is pure grey.
+    Returns (raw_source, clamped_result). The raw source is returned
+    so the caller can exclude it from subsequent role assignment.
+    Without that, a semantic role with a nearby hue can re-pick the
+    same source color and produce an identical hex after clamping.
+
+    Falls back to (None, "#89b4fa") if the image is pure grey.
     """
     best, best_chroma = None, -1.0
     for hex_c, _ in candidates:
@@ -203,9 +207,8 @@ def _pick_primary_accent(candidates: list[tuple[str, float]]) -> str:
         if chroma > best_chroma:
             best, best_chroma = hex_c, chroma
     if best is None:
-        return "#89b4fa"
-    return _usable_accent(best)
-
+        return None, "#89b4fa"
+    return best, _usable_accent(best)
 
 def _accent_text(accent: str) -> str:
     """Pick black or white for text on top of `accent`."""
@@ -300,9 +303,15 @@ def _from_candidates(candidates: list[tuple[str, float]]) -> Theme:
     neutrals = _neutral_ramp(dominant_hue, dominant_chroma)
     neutrals = _apply_contrast_floors(neutrals)
 
-    # Accent first so semantic roles can exclude it.
-    accent = _pick_primary_accent(candidates)
-    accents = _assign_accents(candidates, exclude={accent})
+    # Accent first. Exclude both its raw source and its clamped form
+    # from role assignment; otherwise a semantic role with a nearby
+    # hue can re-pick the same source and produce an identical hex
+    # after clamping.
+    accent_raw, accent = _pick_primary_accent(candidates)
+    exclude: set[str] = {accent}
+    if accent_raw:
+        exclude.add(accent_raw)
+    accents = _assign_accents(candidates, exclude=exclude)
     accent_text = _accent_text(accent)
 
     return _assemble(neutrals, accents, accent, accent_text)
