@@ -14,6 +14,7 @@ The tray uses pystray and shows:
     - Pause / Resume
     - Apply now
     - Resync
+    - Run at login (toggle)
     - Open config folder
     - Open log file
     - Quit
@@ -36,6 +37,7 @@ import time
 from pathlib import Path
 
 from . import __version__ as VERSION
+from . import autostart
 from . import color as C
 from . import config as config_mod
 from . import log
@@ -187,6 +189,21 @@ def _run_tray(engine: Engine) -> int:
     def on_resync(icon, item):
         engine.resync()
 
+    def on_toggle_autostart(icon, item):
+        if autostart.is_enabled():
+            ok = autostart.disable()
+            if ok:
+                log.info("autostart disabled")
+            else:
+                log.warn("could not disable autostart (see log)")
+        else:
+            ok = autostart.enable()
+            if ok:
+                log.info("autostart enabled")
+            else:
+                log.warn("could not enable autostart (see log)")
+        icon.update_menu()
+
     def on_open_config(icon, item):
         _open_path(config_mod.CONFIG_DIR)
 
@@ -225,6 +242,12 @@ def _run_tray(engine: Engine) -> int:
         ),
         pystray.MenuItem("Apply now", on_apply_now),
         pystray.MenuItem("Resync", on_resync),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem(
+            "Run at login",
+            on_toggle_autostart,
+            checked=lambda item: autostart.is_enabled(),
+        ),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Open config folder", on_open_config),
         pystray.MenuItem("Open log", on_open_log),
