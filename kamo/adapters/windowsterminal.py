@@ -5,10 +5,12 @@ Windows Terminal's settings.json is strict JSON. It contains a
 keys (background, foreground, the 8 ANSI colors, and their 8 bright
 variants).
 
-Kamo edits the scheme whose `name` matches `scheme_name` (default:
-"Interstellar", since that is what your `profiles.defaults.colorScheme`
-points at). All other schemes are left alone. The scheme name itself
-is preserved.
+Kamo edits the scheme named by `scheme_name` in kamo.toml, or - if
+that key is absent or "auto" - the scheme that
+`profiles.defaults.colorScheme` currently points at. Auto-detection
+means Kamo works on any Windows Terminal setup without configuration:
+whatever theme the user has selected is the one that gets recolored.
+All other schemes are left alone. The scheme name itself is preserved.
 
 Reload: Windows Terminal watches its settings.json and applies
 changes live. No CLI call needed.
@@ -92,7 +94,12 @@ class WindowsTerminalAdapter(Adapter):
         super().__init__(cfg)
 
         self.path = self._resolve_path()
-        self.scheme_name = self.cfg_value("scheme_name", "Interstellar")
+        # None or "auto" means "detect from settings.json's active
+        # scheme". A string means the user named a specific scheme.
+        raw_name = self.cfg_value("scheme_name", None)
+        if isinstance(raw_name, str) and raw_name.lower() == "auto":
+            raw_name = None
+        self.scheme_name: str | None = raw_name
         self.ansi_map = self.cfg_dict("ansi_map", DEFAULT_ANSI_MAP)
 
     # ------------------------------------------------------------------
@@ -103,6 +110,31 @@ class WindowsTerminalAdapter(Adapter):
             p = resolve_path(override)
             return p if p.exists() else None
         return first_existing(DEFAULT_SETTINGS_CANDIDATES)
+
+    def _resolve_scheme_name(self, data: dict) -> str | None:
+        """Determine which scheme to target.
+
+        Order:
+            1. Explicit `scheme_name` in kamo.toml.
+            2. `profiles.defaults.colorScheme` in settings.json.
+            3. None, in which case the caller logs and skips.
+
+        Auto-detection is what makes this work on any Windows
+        Terminal install without a user editing kamo.toml.
+        """
+        if self.scheme_name:
+            return self.scheme_name
+
+        profiles = data.get("profiles")
+        if isinstance(profiles, dict):
+            defaults = profiles.get("defaults")
+            if isinstance(defaults, dict):
+                name = defaults.get("colorScheme")
+                if isinstance(name, str) and name:
+                    self.log_info(f"auto-detected scheme {name!r}")
+                    return name
+
+        return None
 
     def is_available(self) -> bool:
         return self.path is not None and self.path.exists()
@@ -135,15 +167,23 @@ class WindowsTerminalAdapter(Adapter):
             self.log_warn("settings.json has no 'schemes' array")
             return
 
+        scheme_name = self._resolve_scheme_name(data)
+        if scheme_name is None:
+            self.log_warn(
+                "no colorScheme found in settings.json and no scheme_name "
+                "in kamo.toml; nothing to do"
+            )
+            return
+
         target = None
         for s in schemes:
-            if isinstance(s, dict) and s.get("name") == self.scheme_name:
+            if isinstance(s, dict) and s.get("name") == scheme_name:
                 target = s
                 break
 
         if target is None:
             self.log_warn(
-                f"scheme {self.scheme_name!r} not found in settings.json; "
+                f"scheme {scheme_name!r} not found in settings.json; "
                 f"available: {[s.get('name') for s in schemes if isinstance(s, dict)]}"
             )
             return
@@ -160,7 +200,7 @@ class WindowsTerminalAdapter(Adapter):
                 changes += 1
 
         if changes == 0:
-            self.log_info(f"scheme {self.scheme_name!r} already up to date")
+            self.log_info(f"scheme {scheme_name!r} already up to date")
             return
 
         output = json.dumps(data, indent=4, ensure_ascii=False) + "\n"
@@ -172,7 +212,7 @@ class WindowsTerminalAdapter(Adapter):
             return
 
         self.log_info(
-            f"updated {changes} color(s) in scheme {self.scheme_name!r}"
+            f"updated {changes} color(s) in scheme {scheme_name!r}"
         )
 
     # ------------------------------------------------------------------

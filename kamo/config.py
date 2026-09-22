@@ -175,7 +175,7 @@ enabled = true
 [adapters.windowsterminal]
 enabled = true
 # settings    = "auto"
-# scheme_name = "Interstellar"
+# scheme_name = "auto"           # "auto" = use the currently active scheme
 # ansi_map = {                   # WT scheme key -> Theme role
 #   background = "base",
 #   foreground = "text",
