@@ -76,10 +76,8 @@ def hex_to_oklch(h: str) -> tuple[float, float, float]:
     return L, C, H
 
 
-def oklch_to_hex(L: float, C: float, H: float) -> str:
-    L = max(0.0, min(1.0, L))
-    C = max(0.0, C)
-
+def _oklch_to_linear_rgb(L: float, C: float, H: float) -> tuple[float, float, float]:
+    """OKLCH -> linear sRGB. May return values outside [0, 1]."""
     a = C * math.cos(math.radians(H))
     b = C * math.sin(math.radians(H))
 
@@ -94,19 +92,58 @@ def oklch_to_hex(L: float, C: float, H: float) -> str:
     r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
     g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
     bb = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+    return r, g, bb
 
-    # Gamut clip in linear space. Cheap and good enough for UI colors;
-    # a proper chroma-reduction would preserve hue better but at the
-    # cost of ~40 more lines.
+
+def _in_gamut(r: float, g: float, b: float, eps: float = 1e-6) -> bool:
+    return (
+        -eps <= r <= 1.0 + eps
+        and -eps <= g <= 1.0 + eps
+        and -eps <= b <= 1.0 + eps
+    )
+
+
+def _gamut_map(L: float, C: float, H: float) -> tuple[float, float, float]:
+    """Return linear RGB for the given OKLCH, reducing chroma if
+    necessary to stay inside the sRGB gamut. Lightness and hue are
+    preserved; only chroma is sacrificed.
+
+    Bisection on C. At C=0 the color is a pure grey at L, which is
+    always in gamut for L in [0, 1]. 20 iterations converge well past
+    the precision of an 8-bit channel.
+    """
+    r, g, b = _oklch_to_linear_rgb(L, C, H)
+    if _in_gamut(r, g, b):
+        return r, g, b
+
+    lo, hi = 0.0, C
+    for _ in range(20):
+        mid = (lo + hi) * 0.5
+        r, g, b = _oklch_to_linear_rgb(L, mid, H)
+        if _in_gamut(r, g, b):
+            lo = mid
+        else:
+            hi = mid
+    return _oklch_to_linear_rgb(L, lo, H)
+
+
+def oklch_to_hex(L: float, C: float, H: float) -> str:
+    L = max(0.0, min(1.0, L))
+    C = max(0.0, C)
+
+    r, g, b = _gamut_map(L, C, H)
+
+    # After mapping, values are within rounding of [0, 1]; clamp for
+    # safety before converting out of linear space.
     r = max(0.0, min(1.0, r))
     g = max(0.0, min(1.0, g))
-    bb = max(0.0, min(1.0, bb))
+    b = max(0.0, min(1.0, b))
 
     r = _linear_to_srgb(r)
     g = _linear_to_srgb(g)
-    bb = _linear_to_srgb(bb)
+    b = _linear_to_srgb(b)
 
-    return rgb_to_hex(r * 255, g * 255, bb * 255)
+    return rgb_to_hex(r * 255, g * 255, b * 255)
 
 
 # ---------------------------------------------------------------------
@@ -142,12 +179,12 @@ def contrast(a: str, b: str) -> float:
 
 def brighten(hex_color: str, dL: float = 0.10, dC: float = 0.0) -> str:
     L, C, H = hex_to_oklch(hex_color)
-    return oklch_to_hex(min(L + dL, 0.97), max(C + dC, 0.0), H)
+    return oklch_to_hex(min(L + dL, 1.0), max(C + dC, 0.0), H)
 
 
 def darken(hex_color: str, dL: float = 0.10) -> str:
     L, C, H = hex_to_oklch(hex_color)
-    return oklch_to_hex(max(L - dL, 0.05), C, H)
+    return oklch_to_hex(max(L - dL, 0.0), C, H)
 
 
 def with_alpha(hex_color: str, alpha: float) -> str:
