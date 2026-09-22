@@ -1,0 +1,98 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "kamo"
+version = "0.1.0"
+description = "Wallpaper-driven theme sync for Windows."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "nwael" },
+]
+keywords = ["wallpaper", "theme", "rice", "windows", "tray"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Desktop Environment",
+]
+
+# Runtime dependencies. These get pulled in by pip and bundled by
+# PyInstaller. Keep this list tight — every entry bloats the exe.
+dependencies = [
+    "pillow>=10.0",
+    "pystray>=0.19",
+    "mss>=9.0",
+    "psutil>=5.9",
+    # tomllib is stdlib on 3.11+. On 3.10 we need the backport.
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+
+[project.optional-dependencies]
+# Dev-only. Not bundled into the exe. Install with:
+#     pip install -e ".[dev]"
+dev = [
+    "pyinstaller>=6.0",
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+]
+
+
+[project.urls]
+Homepage = "https://github.com/nwael/kamo"
+Issues   = "https://github.com/nwael/kamo/issues"
+
+
+[project.scripts]
+# Console script installed by pip. Useful for `kamo --once` during
+# development. The compiled exe does not use this entry point — it
+# runs `kamo.__main__` directly via PyInstaller.
+kamo = "kamo.__main__:main"
+
+
+[tool.setuptools]
+# Only ship the package, not tests or docs.
+packages = ["kamo", "kamo.adapters"]
+
+
+[tool.setuptools.package-data]
+# No data files. DEFAULT_TOML lives inside config.py, so nothing to
+# bundle. If you ever add a .ico or a template file, list it here.
+kamo = []
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    "error",
+    # Pillow's deprecation noise is not our problem.
+    "ignore::DeprecationWarning:PIL.*",
+]
+
+
+[tool.pyinstaller]
+# Not a real standard, but a convention some projects use to keep the
+# build command in version control. Read by kamo.spec, not by
+# PyInstaller itself.
+name = "Kamo"
+onefile = true
+noconsole = true
+icon = "kamo.ico"
+hidden_imports = [
+    "pystray._win32",
+    "mss.windows",
+    "psutil",
+    "PIL._tkinter_finder",
+]
