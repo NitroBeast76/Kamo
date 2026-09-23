@@ -496,4 +496,3 @@ Everything else is standard library.
 ## License
 
 MIT. See `LICENSE`.
-```
