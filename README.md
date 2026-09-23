@@ -497,15 +497,3 @@ Everything else is standard library.
 
 MIT. See `LICENSE`.
 ```
-
-Notes on the choices:
-
-- **Tagline placement.** The "Kamo is shy" line is the very first thing after the title, in a blockquote so it renders as a pull-quote on GitHub. It sets the tone before any technical content.
-- **"Dynamic wallpaper engine" framing.** The intro and "What it does" section sell it as that. The technical sections then quietly reveal it's a config-file editor under the hood, which is honest without being a letdown.
-- **Config template inlined.** The whole `DEFAULT_TOML` is in the README inside a fenced code block. People browsing the repo see exactly what they'll get without installing. It duplicates `config.py`'s `DEFAULT_TOML`, which is a maintenance cost — if you ever change one, change the other.
-- **Tables for apps and tray menu.** Tables scan faster than prose for reference material.
-- **Design notes at the bottom.** Some readers care, some don't. Keeping them last means the reader who just wants to install and run never has to scroll past them.
-- **No screenshots.** I can't generate images, and placeholder screenshots look worse than none. If you want them, add `docs/` with a few PNGs and reference them — the tray menu and a before/after of the bar would be the useful ones.
-- **No GIF.** Same reason. A 5-second loop of the wallpaper changing and the bar recoloring would sell the whole project better than any paragraph. Worth doing once you have the exe working.
-
-That's the last core file. Everything from `color.py` down is now written. The remaining things — `tests/`, `kamo.ico`, a `LICENSE` file — are your call. Say the word if you want tests scaffolded.
