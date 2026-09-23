@@ -11,9 +11,14 @@ as Kamo.xaml, and points Flow Launcher at it. Flipping back to the
 original theme takes one click in Flow Launcher's settings UI.
 
 Reload: Flow Launcher reads its theme at startup. There is no
-documented IPC for theme reload. Kamo logs a note and leaves the
-running instance alone. Restart Flow Launcher (tray icon -> Quit,
-then relaunch) to see the change.
+documented IPC for theme reload. Kamo can kill and relaunch it, but
+that interrupts whatever the user is typing into the search box,
+so auto-restart is OFF by default.
+
+Set `restart = true` in the [adapters.flowlauncher] section of
+kamo.toml to enable it. With the default (false), Kamo updates the
+files and logs a note; the new theme appears the next time Flow
+Launcher restarts.
 
 Color substitution:
 
@@ -86,6 +91,9 @@ _HEX_TOKEN = re.compile(r"#[0-9A-Fa-f]{3,8}\b")
 class FlowLauncherAdapter(Adapter):
     name = "flowlauncher"
 
+    process_name = "Flow.Launcher.exe"
+    launch_command = ["Flow.Launcher"]
+
     def __init__(self, cfg: dict):
         super().__init__(cfg)
 
@@ -96,6 +104,17 @@ class FlowLauncherAdapter(Adapter):
         self.output_theme_name = self.cfg_value("output_theme", "Kamo.xaml")
         self.theme_key = self.output_theme_name.rsplit(".xaml", 1)[0]
         self.color_map = self.cfg_dict("color_map", DEFAULT_COLOR_MAP)
+
+        # Auto-restart is OFF by default: killing Flow Launcher while
+        # the user is typing into it is hostile. Users who want it
+        # set restart = true in kamo.toml.
+        self.restart = bool(self.cfg_value("restart", False))
+        if not self.restart:
+            self.process_name = None
+
+        cmd = self.cfg_value("launch_command", None)
+        if isinstance(cmd, list) and cmd:
+            self.launch_command = cmd
 
     # ------------------------------------------------------------------
 
@@ -153,10 +172,14 @@ class FlowLauncherAdapter(Adapter):
 
         self.log_info(f"wrote {out_path.name}")
 
-        if self._update_settings():
-            self.log_info(
-                "settings.json updated; restart Flow Launcher to apply"
-            )
+        settings_changed = self._update_settings()
+        if settings_changed:
+            self.log_info("settings.json updated")
+
+        if self.restart:
+            self.reload()
+        elif settings_changed:
+            self.log_info("restart Flow Launcher to apply")
 
     # ------------------------------------------------------------------
 

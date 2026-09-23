@@ -12,19 +12,31 @@ footgun. The default here is yasb_colors.css because that is what a
 fresh yasb install imports. If your styles.css imports something
 else, override `colors_file` in kamo.toml.
 
-Reload: yasb watches its stylesheet when `watch_stylesheet: true` is
-set in its config. We do not touch that setting; if the user has it
-off, they get stale colors until they restart yasb. We do touch
-styles.css's mtime as a nudge - some builds only fire the watcher
-when the *importing* file changes, not the imported one.
+Reload: two mechanisms, in order.
+
+    1. yasb watches its stylesheet when `watch_stylesheet: true`. But
+    the watcher fires on content changes, not mtime, so `os.utime`
+       alone does nothing. Kamo rewrites a marker comment at the
+       bottom of styles.css. That fires the watcher.
+
+    2. If restart = true (the default) and yasb.exe is running, Kamo
+       kills and relaunches it. Belt-and-suspenders: if the watcher
+       misses the change or is disabled, the restart catches it.
 """
 
 from __future__ import annotations
 
+import re
+import time
 from pathlib import Path
 
 from .base import Adapter, first_existing, read_text, resolve_path, write_text
 from ..theme import Theme
+
+
+# Marker comment rewritten on every apply to force yasb's file
+# watcher to fire. Must be a content change, not just an mtime change.
+_MARKER_RE = re.compile(r"/\*\s*kamo-update:\s*\d+\s*\*/")
 
 
 # CSS variable -> Theme role. This mirrors the variable names yasb's
@@ -53,6 +65,9 @@ DEFAULT_DIR_CANDIDATES = [
 class YasbAdapter(Adapter):
     name = "yasb"
 
+    process_name = "yasb.exe"
+    launch_command = ["yasb"]
+
     def __init__(self, cfg: dict):
         super().__init__(cfg)
 
@@ -61,6 +76,16 @@ class YasbAdapter(Adapter):
         self.styles_file = self.cfg_value("styles_file", "styles.css")
         self.variables = self.cfg_dict("variables", DEFAULT_VARIABLES)
 
+        self.restart = bool(self.cfg_value("restart", True))
+        if not self.restart:
+            # Disables reload() by clearing the process name.
+            self.process_name = None
+
+        # Allow overriding launch_command from config.
+        cmd = self.cfg_value("launch_command", None)
+        if isinstance(cmd, list) and cmd:
+            self.launch_command = cmd
+    
     # ------------------------------------------------------------------
 
     def _resolve_dir(self) -> Path | None:
@@ -105,12 +130,15 @@ class YasbAdapter(Adapter):
             self.log_error(f"could not write {colors_path}: {e}")
             return
 
+
         self.log_info(f"wrote {colors_path.name}")
 
         styles_path = self._styles_path()
         if styles_path is not None:
-            self._touch(styles_path)
+            self._bump_styles(styles_path)
 
+        if self.restart:
+            self.reload()
     # ------------------------------------------------------------------
 
     def _render(self, theme: Theme) -> str:
@@ -125,11 +153,28 @@ class YasbAdapter(Adapter):
         lines.append("")
         return "\n".join(lines)
 
-    @staticmethod
-    def _touch(path: Path) -> None:
-        """Bump mtime so yasb's stylesheet watcher fires."""
+    def _bump_styles(self, path: Path) -> None:
+        """Rewrite a marker comment in styles.css so yasb's watcher
+        fires. os.utime only changes mtime, which does not trigger
+        Qt's QFileSystemWatcher. Only a content change does.
+        """
         try:
-            import os
-            os.utime(path, None)
-        except OSError:
-            pass
+            text = read_text(path)
+        except OSError as e:
+            self.log_warn(f"could not read styles.css for reload: {e}")
+            return
+
+        marker = f"/* kamo-update: {int(time.time())} */"
+        if _MARKER_RE.search(text):
+            new_text = _MARKER_RE.sub(marker, text)
+        else:
+            sep = "" if text.endswith("\n") else "\n"
+            new_text = text + sep + marker + "\n"
+
+        if new_text == text:
+            return
+
+        try:
+            write_text(path, new_text)
+        except OSError as e:
+            self.log_warn(f"could not write styles.css for reload: {e}")

@@ -46,11 +46,11 @@ DEFAULTS: dict[str, Any] = {
         "log_level": "info",    # debug | info | warn | error
     },
     "adapters": {
-        "yasb":            {"enabled": True},
-        "glazewm":         {"enabled": True},
+        "yasb":            {"enabled": True, "restart": True},
+        "glazewm":         {"enabled": True, "restart": True},
         "cava":            {"enabled": True},
-        "chronoterm":      {"enabled": True},
-        "flowlauncher":    {"enabled": True},
+        "chronoterm":      {"enabled": True, "restart": True},
+        "flowlauncher":    {"enabled": True, "restart": False},
         "fastfetch":       {"enabled": True},
         "windowsterminal": {"enabled": True},
     },
@@ -85,6 +85,8 @@ log_level     = "info"  # debug | info | warn | error
 
 [adapters.yasb]
 enabled = true
+# restart        = true          # kill + relaunch yasb if running
+# launch_command = ["yasb"]
 # dir          = "~/.config/yasb"
 # colors_file  = "yasb_colors.css"
 # styles_file  = "styles.css"
@@ -103,6 +105,8 @@ enabled = true
 
 [adapters.glazewm]
 enabled = true
+# restart        = true          # kill + relaunch if CLI reload fails
+# launch_command = ["glazewm"]
 # config         = "~/.glzr/glazewm/config.yaml"
 # reload_command = ["glazewm", "command", "wm-reload-config"]
 # anchors = {                    # YAML anchor -> Theme role
@@ -140,6 +144,8 @@ enabled = true
 
 [adapters.flowlauncher]
 enabled = true
+# restart        = false         # off by default; restart interrupts typing
+# launch_command = ["Flow.Launcher"]
 # settings     = "%APPDATA%/FlowLauncher/Settings/Settings.json"
 # themes_dir   = "%APPDATA%/FlowLauncher/Themes"
 # base_theme   = "CircleDarkBlur.xaml"

@@ -6,9 +6,10 @@ image. No side effects.
 
 Approach:
     1. Quantize the image down to ~16 dominant colors with weights.
-    2. Pick the primary accent: the most saturated candidate, then
-       clamp it into a usable accent band. Done first so semantic
-       roles can exclude it.
+    2. Pick the primary accent: the most saturated candidate whose
+       hue is within tolerance of the image's mood hue. Falls back to
+       the most saturated overall if nothing is in-family. Done first
+       so semantic roles can exclude it.
     3. Pick a "mood" neutral from the most prominent color - its hue
        tints every background and foreground, but chroma is clamped
        low so text stays readable.
@@ -53,6 +54,13 @@ HUE_ANCHORS: dict[str, float] = {
 # using a poor match. Keeps semantic roles recognizable on
 # monochromatic wallpapers.
 HUE_SYNTHESIS_THRESHOLD: float = 50.0
+
+# How far from the mood hue a candidate can be and still count as
+# "in the wallpaper's color family" for the purpose of picking the
+# primary accent. A purple wallpaper with one orange element will
+# pick purple for its accent because the orange is 120 degrees away
+# and the tolerance is 60.
+MOOD_HUE_TOLERANCE: float = 60.0
 
 # Usable accent band. Any color pulled from the image for a semantic
 # or primary role gets clamped into this range, so highlights stay
@@ -191,8 +199,18 @@ def _assign_accents(candidates: list[tuple[str, float]],
 
 def _pick_primary_accent(
     candidates: list[tuple[str, float]],
+    mood_hue: float,
+    hue_tolerance: float = MOOD_HUE_TOLERANCE,
 ) -> tuple[str | None, str]:
     """Pick the primary accent from the raw candidates.
+
+    Prefers the most saturated candidate whose hue is within
+    `hue_tolerance` degrees of the mood hue. A purple-dominant
+    wallpaper with one bright orange element gets a purple accent,
+    because the orange is far outside the mood's color family.
+
+    If nothing in the image is within tolerance, falls back to the
+    most saturated candidate overall.
 
     Returns (raw_source, clamped_result). The raw source is returned
     so the caller can exclude it from subsequent role assignment.
@@ -201,14 +219,25 @@ def _pick_primary_accent(
 
     Falls back to (None, "#89b4fa") if the image is pure grey.
     """
-    best, best_chroma = None, -1.0
+    in_family: list[tuple[str, float]] = []
     for hex_c, _ in candidates:
-        _, chroma, _ = C.hex_to_oklch(hex_c)
+        _, chroma, hue = C.hex_to_oklch(hex_c)
+        if C.hue_distance(hue, mood_hue) <= hue_tolerance:
+            in_family.append((hex_c, chroma))
+
+    pool = in_family if in_family else [
+        (h, C.hex_to_oklch(h)[1]) for h, _ in candidates
+    ]
+
+    best, best_chroma = None, -1.0
+    for hex_c, chroma in pool:
         if chroma > best_chroma:
             best, best_chroma = hex_c, chroma
+
     if best is None:
         return None, "#89b4fa"
     return best, _usable_accent(best)
+
 
 def _accent_text(accent: str) -> str:
     """Pick black or white for text on top of `accent`."""
@@ -303,11 +332,13 @@ def _from_candidates(candidates: list[tuple[str, float]]) -> Theme:
     neutrals = _neutral_ramp(dominant_hue, dominant_chroma)
     neutrals = _apply_contrast_floors(neutrals)
 
-    # Accent first. Exclude both its raw source and its clamped form
-    # from role assignment; otherwise a semantic role with a nearby
-    # hue can re-pick the same source and produce an identical hex
-    # after clamping.
-    accent_raw, accent = _pick_primary_accent(candidates)
+    # Accent first, restricted to the mood's hue family so a purple
+    # wallpaper doesn't get an orange accent just because of one
+    # bright focal element. Exclude both its raw source and its
+    # clamped form from role assignment; otherwise a semantic role
+    # with a nearby hue can re-pick the same source and produce an
+    # identical hex after clamping.
+    accent_raw, accent = _pick_primary_accent(candidates, dominant_hue)
     exclude: set[str] = {accent}
     if accent_raw:
         exclude.add(accent_raw)

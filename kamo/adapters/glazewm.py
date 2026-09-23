@@ -60,6 +60,9 @@ _COLOR_LINE = re.compile(
 class GlazewmAdapter(Adapter):
     name = "glazewm"
 
+    process_name = "glazewm.exe"
+    launch_command = ["glazewm"]
+
     def __init__(self, cfg: dict):
         super().__init__(cfg)
 
@@ -68,6 +71,14 @@ class GlazewmAdapter(Adapter):
         self.reload_command = self.cfg_value(
             "reload_command", DEFAULT_RELOAD_COMMAND
         )
+
+        self.restart = bool(self.cfg_value("restart", True))
+        if not self.restart:
+            self.process_name = None
+
+        cmd = self.cfg_value("launch_command", None)
+        if isinstance(cmd, list) and cmd:
+            self.launch_command = cmd
 
     # ------------------------------------------------------------------
 
@@ -209,27 +220,33 @@ class GlazewmAdapter(Adapter):
     # ------------------------------------------------------------------
 
     def _reload(self) -> None:
-        if not self.reload_command:
-            return
-        try:
-            result = subprocess.run(
-                self.reload_command,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-        except FileNotFoundError:
-            self.log_warn(
-                f"{self.reload_command[0]!r} not on PATH; reload manually"
-            )
-            return
-        except subprocess.TimeoutExpired:
-            self.log_warn("reload command timed out")
-            return
-        except OSError as e:
-            self.log_warn(f"reload failed: {e}")
-            return
+        """Try the CLI reload. If it fails, fall back to kill+restart
+        (which is what actually makes border colors change)."""
+        if self.reload_command:
+            try:
+                result = subprocess.run(
+                    self.reload_command,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0:
+                    self.log_info("reloaded via CLI")
+                    return
+                err = (result.stderr or result.stdout or "").strip()
+                self.log_warn(
+                    f"CLI reload returned {result.returncode}: {err}; "
+                    "restarting"
+                )
+            except FileNotFoundError:
+                self.log_warn(
+                    f"{self.reload_command[0]!r} not on PATH; restarting"
+                )
+            except subprocess.TimeoutExpired:
+                self.log_warn("reload command timed out; restarting")
+            except OSError as e:
+                self.log_warn(f"reload failed ({e}); restarting")
 
-        if result.returncode != 0:
-            err = (result.stderr or result.stdout or "").strip()
-            self.log_warn(f"reload returned {result.returncode}: {err}")
+        # Fall back to restart (no-op if process_name is None or the
+        # app isn't running).
+        self.reload()
