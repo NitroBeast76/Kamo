@@ -13,16 +13,30 @@ Two color surfaces in config.jsonc:
     2. Inline module colors: `"color"`, `"keyColor"` fields scattered
        across modules, each a hex string.
 
-Both are rewritten by text substitution. The config is JSONC
-(JSON with // comments), so we deliberately do not parse it - a
-real parser would strip comments and reformat the file.
+Logo block: rewritten by *key name*. `"2"` through `"9"` are found
+by pattern and set to the current gradient stops. Key-based, no
+state needed.
 
-The inline map is checked first: any hex token present in it is
-replaced. Then the logo block is found and its keys "2".."9" are
-overwritten. This ordering means a hex value that appears both as a
-logo stop and inline (unlikely but possible) is handled by the
-inline map, and the logo substitution uses the pattern-scoped
-version, so neither leaks into the other.
+Inline colors: rewritten by *hex value*. The inline_map says
+"`#FF8200` should become the accent role". On the first apply this
+works. On every apply after that, `#FF8200` is gone - replaced by
+the previous theme's accent. Without memory, nothing matches and the
+inline colors freeze.
+
+So Kamo remembers what it wrote last time (in state.json) and adds
+both the original source hexes and its own previous writes to the
+substitution map. Every apply works, forever.
+
+The config is JSONC (JSON with // comments), so we deliberately do
+not parse it - a real parser would strip comments and reformat the
+file.
+
+Inline map values may also carry an alpha suffix:
+
+    "#FF8200": "accent"           plain role
+    "#FF8200": "base@0.20"        role with alpha, emitted as #AARRGGBB
+
+Alpha support is minimal for now; add it if a config needs it.
 """
 
 from __future__ import annotations
@@ -32,6 +46,7 @@ from pathlib import Path
 
 from .base import Adapter, first_existing, read_text, resolve_path, write_text
 from .. import color as C
+from .. import state as state_mod
 from ..theme import Theme
 
 
@@ -83,6 +98,10 @@ _COLOR_BLOCK = re.compile(
 # word-boundary guard against partial matches.
 _HEX_TOKEN = re.compile(r"#[0-9A-Fa-f]{6}\b")
 
+# State file key. The value stored under this key is a dict of
+# {"role": "#hex"} - what Kamo wrote last time for each role.
+_STATE_KEY = "inline"
+
 
 class FastfetchAdapter(Adapter):
     name = "fastfetch"
@@ -124,14 +143,16 @@ class FastfetchAdapter(Adapter):
 
         original = source
 
-        # Resolve inline map once.
-        resolved_inline = self._resolve_inline(theme)
+        # Inline substitution. Uses state memory so every apply can
+        # find the previous theme's hexes, not just the original ones.
+        last_written = state_mod.get(self.name, _STATE_KEY, {}) or {}
+        resolved_inline = self._resolve_inline(theme, last_written)
         if resolved_inline:
             source = self._substitute_inline(source, resolved_inline)
 
-        # Rewrite the logo gradient block.
+        # Logo gradient. Key-based, no state needed.
         gradient = self._render_gradient(theme)
-        source, replaced = self._substitute_logo(source, gradient)
+        source, _ = self._substitute_logo(source, gradient)
 
         if source == original:
             self.log_info("config already up to date")
@@ -143,22 +164,67 @@ class FastfetchAdapter(Adapter):
             self.log_error(f"could not write {self.path}: {e}")
             return
 
+        # Remember what we just wrote, keyed by role, so next apply
+        # can find these hexes even though the originals are gone.
+        self._remember_written(theme)
+
         self.log_info(f"wrote {self.path.name}")
 
     # ------------------------------------------------------------------
 
-    def _resolve_inline(self, theme: Theme) -> dict[str, str]:
+    def _resolve_inline(
+        self,
+        theme: Theme,
+        last_written: dict[str, str],
+    ) -> dict[str, str]:
+        """Build the substitution map: source_hex -> new_hex.
+
+        Two sources of source_hex for each role:
+
+            1. The original hex from DEFAULT_INLINE_MAP. Matches a
+               pristine config the user just restored.
+
+            2. The hex Kamo wrote last time for the same role. This
+               is the normal case on every apply after the first,
+               because the original hexes have been overwritten.
+
+        Both keys map to the current theme's value for that role.
+        """
         out: dict[str, str] = {}
         for source_hex, role in self.inline_map.items():
             if not theme.has(role):
-                self.log_warn(f"inline {source_hex!r} maps to unknown role {role!r}")
+                self.log_warn(
+                    f"inline {source_hex!r} maps to unknown role {role!r}"
+                )
                 continue
-            out[source_hex.lower()] = theme.get(role)
+            new_val = theme.get(role)
+
+            # Pristine-config match.
+            out[source_hex.lower()] = new_val
+
+            # Previous-write match.
+            prev = last_written.get(role)
+            if prev and prev.lower() != source_hex.lower():
+                out[prev.lower()] = new_val
+
         return out
+
+    def _remember_written(self, theme: Theme) -> None:
+        """Persist what this apply just wrote for each role."""
+        written: dict[str, str] = {}
+        for _source_hex, role in self.inline_map.items():
+            if theme.has(role):
+                written[role] = theme.get(role)
+        if written:
+            state_mod.put(self.name, _STATE_KEY, written)
 
     def _render_gradient(self, theme: Theme) -> dict[str, str]:
         """Return {"2": "#...", ..., "9": "#..."} for the logo block."""
-        role = self.gradient_role if theme.has(self.gradient_role) else "accent"
+        role = (
+            self.gradient_role
+            if theme.has(self.gradient_role)
+            else "accent"
+        )
         accent = theme.get(role)
         _, acc_chroma, acc_hue = C.hex_to_oklch(accent)
 
@@ -203,4 +269,11 @@ class FastfetchAdapter(Adapter):
 
         new_inner = _LOGO_ENTRY.sub(entry_repl, inner)
 
-        return source[: match.start()] + prefix + new_inner + suffix + source[match.end():], replaced[0]
+        return (
+            source[: match.start()]
+            + prefix
+            + new_inner
+            + suffix
+            + source[match.end():],
+            replaced[0],
+        )
