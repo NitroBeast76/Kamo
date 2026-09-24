@@ -260,7 +260,7 @@ def _neutral_ramp(mood_hue: float, mood_chroma: float) -> dict[str, str]:
     """
     # Cap the mood chroma. A vivid wallpaper should tint the neutrals,
     # not recolor them.
-    base_chroma = min(mood_chroma, 0.04)
+    base_chroma = min(mood_chroma, 0.10)
     out: dict[str, str] = {}
 
     for role, L in NEUTRAL_TARGETS.items():
