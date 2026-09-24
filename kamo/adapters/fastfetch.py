@@ -8,35 +8,38 @@ Two color surfaces in config.jsonc:
 
     1. The logo block: eight keys "2".."9" whose values are hex
        strings. These match $2..$9 placeholders in the ASCII art
-       file next to the config.
+       file next to the config. Handled by key, always rewritten
+       from the current theme's accent gradient.
 
-    2. Inline module colors: `"color"`, `"keyColor"` fields scattered
-       across modules, each a hex string.
+    2. Inline hex literals: every other `"#rrggbb"` in the file,
+       whether under a `color` key, a `keyColor` key, or anywhere
+       else. Handled by value substitution.
 
-Logo block: rewritten by *key name*. `"2"` through `"9"` are found
-by pattern and set to the current gradient stops. Key-based, no
-state needed.
+Inline hex substitution has three sources of truth, checked in
+order:
 
-Inline colors: rewritten by *hex value*. The inline_map says
-"`#FF8200` should become the accent role". On the first apply this
-works. On every apply after that, `#FF8200` is gone - replaced by
-the previous theme's accent. Without memory, nothing matches and the
-inline colors freeze.
+    1. `inline_map` from kamo.toml. Explicit user pins. Highest
+       priority, always wins.
 
-So Kamo remembers what it wrote last time (in state.json) and adds
-both the original source hexes and its own previous writes to the
-substitution map. Every apply works, forever.
+    2. Previous write. state.json remembers every hex Kamo has
+       written and the role it wrote it as. On the next apply,
+       those hexes are found and re-swapped to the new theme.
+
+    3. Auto-classification by OKLCH. Same logic as the yasb
+       adapter: saturated colors by hue anchor, neutrals by
+       lightness band. Picks the closest theme role.
+
+Auto-classification is what makes Kamo work on any fastfetch
+config without the user writing a map. The map exists only for the
+case where auto gets a specific color wrong and the user wants to
+pin it.
+
+Alpha channel is preserved. 8-digit hexes are split into base +
+alpha, the base is substituted, the alpha is reattached.
 
 The config is JSONC (JSON with // comments), so we deliberately do
 not parse it - a real parser would strip comments and reformat the
 file.
-
-Inline map values may also carry an alpha suffix:
-
-    "#FF8200": "accent"           plain role
-    "#FF8200": "base@0.20"        role with alpha, emitted as #AARRGGBB
-
-Alpha support is minimal for now; add it if a config needs it.
 """
 
 from __future__ import annotations
@@ -50,19 +53,19 @@ from .. import state as state_mod
 from ..theme import Theme
 
 
-# Inline hex -> Theme role. Tuned for the current fastfetch config,
-# which uses five distinct warm tones.
-DEFAULT_INLINE_MAP: dict[str, str] = {
-    "#FF8200": "accent",
-    "#E5A480": "text",
-    "#CC8054": "subtext1",
-    "#A87054": "subtext0",
-    "#934F27": "surface2",
-}
+# ---------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------
+
+# User pins: source hex -> role. Empty by default; users override in
+# kamo.toml if auto-classification gets a specific hex wrong.
+DEFAULT_INLINE_MAP: dict[str, str] = {}
+
+# Hexes Kamo must never touch. Stored without leading #, lowercase.
+DEFAULT_RESERVED_HEXES: list[str] = []
 
 # Lightness / chroma multipliers for the logo ramp. Index 0 is $2
-# (darkest), index 7 is $9 (brightest). Same shape as cava's gradient
-# so all apps render a wallpaper the same way.
+# (darkest), index 7 is $9 (brightest).
 LOGO_STOP_KEYS = ["2", "3", "4", "5", "6", "7", "8", "9"]
 LOGO_STOP_SHAPE = [
     (0.30, 0.60),
@@ -82,25 +85,36 @@ DEFAULT_CONFIG_CANDIDATES = [
     "~/AppData/Local/fastfetch/config.jsonc",
 ]
 
-# Matches "key": "value" for a single digit key, inside or outside a
-# block. The color block is scoped separately.
+# Hue anchors. Same values as palette.py and yasb.py so all three
+# agree on what "red" means.
+_HUE_ANCHORS: dict[str, float] = {
+    "red":    25.0,
+    "green":  145.0,
+    "yellow": 85.0,
+    "blue":   250.0,
+    "mauve":  310.0,
+    "teal":   180.0,
+    "peach":  50.0,
+    "pink":   350.0,
+    "sky":    220.0,
+}
+
+# Marker regex for `"2".."9"` inside a color block.
 _LOGO_ENTRY = re.compile(
-    r'("(?P<key>[2-9])"\s*:\s*")(?P<hex>#[0-9A-Fa-f]{6})(")'
+    r'("(?P<key>[2-9])"\s*:\s*")(?P<hex>#[0-9A-Fa-f]{6,8})(")'
 )
 
-# Matches the first "color": { ... } block, non-greedy.
+# Any "color": { ... } block, non-greedy.
 _COLOR_BLOCK = re.compile(
     r'("color"\s*:\s*\{)(.*?)(\})',
     re.DOTALL,
 )
 
-# Matches a bare hex token. Same pattern as Flow Launcher's, with the
-# word-boundary guard against partial matches.
-_HEX_TOKEN = re.compile(r"#[0-9A-Fa-f]{6}\b")
+# Any hex token: 3, 4, 6, or 8 hex digits.
+_HEX_TOKEN = re.compile(r"#([0-9A-Fa-f]{3,8})\b")
 
-# State file key. The value stored under this key is a dict of
-# {"role": "#hex"} - what Kamo wrote last time for each role.
-_STATE_KEY = "inline"
+# State key for the hex->role map.
+_STATE_KEY = "hex_map"
 
 
 class FastfetchAdapter(Adapter):
@@ -115,6 +129,12 @@ class FastfetchAdapter(Adapter):
         self.gradient_keys = list(
             self.cfg_value("gradient_keys", LOGO_STOP_KEYS)
         )
+        self.reserved_hexes = {
+            h.lstrip("#").lower()
+            for h in self.cfg_value(
+                "reserved_hexes", DEFAULT_RESERVED_HEXES
+            )
+        }
 
     # ------------------------------------------------------------------
 
@@ -143,16 +163,26 @@ class FastfetchAdapter(Adapter):
 
         original = source
 
-        # Inline substitution. Uses state memory so every apply can
-        # find the previous theme's hexes, not just the original ones.
-        last_written = state_mod.get(self.name, _STATE_KEY, {}) or {}
-        resolved_inline = self._resolve_inline(theme, last_written)
-        if resolved_inline:
-            source = self._substitute_inline(source, resolved_inline)
+        # Build substitution lookup. Order of precedence:
+        #   user color_map > state memory > auto (auto runs during sub)
+        state_map = self._load_state_map()
+        config_map = {k.lower(): v for k, v in self.inline_map.items()}
+        lookup = {**state_map, **config_map}
 
-        # Logo gradient. Key-based, no state needed.
+        # Pass 1: inline hexes everywhere in the file.
+        source, inline_changes, recorded = self._substitute_hexes(
+            source, theme, lookup
+        )
+
+        # Pass 2: logo gradient. Key-based; runs after so its keys
+        # aren't caught by the generic hex sub.
         gradient = self._render_gradient(theme)
         source, _ = self._substitute_logo(source, gradient)
+
+        # Persist what we substituted so the next apply can find these
+        # hexes even though the originals are gone.
+        new_state = {**state_map, **config_map, **recorded}
+        self._save_state_map(new_state)
 
         if source == original:
             self.log_info("config already up to date")
@@ -164,62 +194,104 @@ class FastfetchAdapter(Adapter):
             self.log_error(f"could not write {self.path}: {e}")
             return
 
-        # Remember what we just wrote, keyed by role, so next apply
-        # can find these hexes even though the originals are gone.
-        self._remember_written(theme)
-
-        self.log_info(f"wrote {self.path.name}")
+        self.log_info(f"wrote {self.path.name} ({inline_changes} inline)")
 
     # ------------------------------------------------------------------
 
-    def _resolve_inline(
+    def _substitute_hexes(
         self,
+        text: str,
         theme: Theme,
-        last_written: dict[str, str],
-    ) -> dict[str, str]:
-        """Build the substitution map: source_hex -> new_hex.
-
-        Two sources of source_hex for each role:
-
-            1. The original hex from DEFAULT_INLINE_MAP. Matches a
-               pristine config the user just restored.
-
-            2. The hex Kamo wrote last time for the same role. This
-               is the normal case on every apply after the first,
-               because the original hexes have been overwritten.
-
-        Both keys map to the current theme's value for that role.
+        lookup: dict[str, str],
+    ) -> tuple[str, int, dict[str, str]]:
+        """Replace every hex token. Returns (new_text, changes, recorded).
+        `recorded` maps every source hex and its replacement back to
+        the role they represent, for state persistence.
         """
-        out: dict[str, str] = {}
-        for source_hex, role in self.inline_map.items():
-            if not theme.has(role):
-                self.log_warn(
-                    f"inline {source_hex!r} maps to unknown role {role!r}"
-                )
-                continue
-            new_val = theme.get(role)
+        changes = 0
+        recorded: dict[str, str] = {}
 
-            # Pristine-config match.
-            out[source_hex.lower()] = new_val
+        def repl(m: re.Match) -> str:
+            nonlocal changes
+            raw = m.group(1)
+            base, alpha = self._split_hex(raw)
+            if base is None:
+                return m.group(0)
+            if base in self.reserved_hexes:
+                return m.group(0)
 
-            # Previous-write match.
-            prev = last_written.get(role)
-            if prev and prev.lower() != source_hex.lower():
-                out[prev.lower()] = new_val
+            role = lookup.get(base)
+            if role is None:
+                role = self._classify_hex(base)
+            if role is None or not theme.has(role):
+                return m.group(0)
 
-        return out
+            new_base = theme.get(role).lstrip("#").lower()
+            recorded[base] = role
+            recorded[new_base] = role
 
-    def _remember_written(self, theme: Theme) -> None:
-        """Persist what this apply just wrote for each role."""
-        written: dict[str, str] = {}
-        for _source_hex, role in self.inline_map.items():
-            if theme.has(role):
-                written[role] = theme.get(role)
-        if written:
-            state_mod.put(self.name, _STATE_KEY, written)
+            if new_base == base:
+                return m.group(0)
+
+            changes += 1
+            if alpha:
+                return "#" + new_base + alpha
+            return "#" + new_base
+
+        new_text = _HEX_TOKEN.sub(repl, text)
+        return new_text, changes, recorded
+
+    @staticmethod
+    def _split_hex(raw: str) -> tuple[str | None, str | None]:
+        n = len(raw)
+        if n == 3:
+            return "".join(c * 2 for c in raw).lower(), None
+        if n == 4:
+            base = "".join(c * 2 for c in raw[:3]).lower()
+            alpha = (raw[3] * 2).lower()
+            return base, alpha
+        if n == 6:
+            return raw.lower(), None
+        if n == 8:
+            return raw[:6].lower(), raw[6:].lower()
+        return None, None
+
+    def _classify_hex(self, base: str) -> str | None:
+        if not re.match(r"^[0-9a-f]{6}$", base):
+            return None
+        try:
+            L, chroma, hue = C.hex_to_oklch("#" + base)
+        except Exception:
+            return None
+
+        if chroma >= 0.08:
+            best_role: str | None = None
+            best_dist = 40.0
+            for role, anchor in _HUE_ANCHORS.items():
+                d = C.hue_distance(hue, anchor)
+                if d < best_dist:
+                    best_role = role
+                    best_dist = d
+            return best_role or "accent"
+
+        if L >= 0.875: return "text"
+        if L >= 0.770: return "subtext1"
+        if L >= 0.680: return "subtext0"
+        if L >= 0.600: return "overlay2"
+        if L >= 0.500: return "overlay1"
+        if L >= 0.400: return "overlay0"
+        if L >= 0.315: return "surface2"
+        if L >= 0.250: return "surface1"
+        if L >= 0.190: return "surface0"
+        if L >= 0.145: return "base"
+        if L >= 0.120: return "mantle"
+        return "crust"
+
+    # ------------------------------------------------------------------
+    # Logo gradient (unchanged behavior)
+    # ------------------------------------------------------------------
 
     def _render_gradient(self, theme: Theme) -> dict[str, str]:
-        """Return {"2": "#...", ..., "9": "#..."} for the logo block."""
         role = (
             self.gradient_role
             if theme.has(self.gradient_role)
@@ -234,27 +306,14 @@ class FastfetchAdapter(Adapter):
             out[key] = C.oklch_to_hex(L, chroma, acc_hue)
         return out
 
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _substitute_inline(source: str, mapping: dict[str, str]) -> str:
-        def repl(m: re.Match) -> str:
-            return mapping.get(m.group(0).lower(), m.group(0))
-        return _HEX_TOKEN.sub(repl, source)
-
     def _substitute_logo(
         self, source: str, gradient: dict[str, str]
     ) -> tuple[str, int]:
-        """Replace the values of keys "2".."9" inside the first
-        "color" block. Other "color" blocks (module-level ones) are
-        left alone because the sub runs on the scoped inner text.
-        """
         match = _COLOR_BLOCK.search(source)
         if not match:
             return source, 0
 
         prefix, inner, suffix = match.group(1), match.group(2), match.group(3)
-
         replaced = [0]
 
         def entry_repl(m: re.Match) -> str:
@@ -268,7 +327,6 @@ class FastfetchAdapter(Adapter):
             return f'{m.group(1)}{new_hex}"'
 
         new_inner = _LOGO_ENTRY.sub(entry_repl, inner)
-
         return (
             source[: match.start()]
             + prefix
@@ -277,3 +335,20 @@ class FastfetchAdapter(Adapter):
             + source[match.end():],
             replaced[0],
         )
+
+    # ------------------------------------------------------------------
+    # State helpers
+    # ------------------------------------------------------------------
+
+    def _load_state_map(self) -> dict[str, str]:
+        stored = state_mod.get(self.name, _STATE_KEY, {})
+        if not isinstance(stored, dict):
+            return {}
+        return {
+            k.lower(): v
+            for k, v in stored.items()
+            if isinstance(k, str) and isinstance(v, str)
+        }
+
+    def _save_state_map(self, m: dict[str, str]) -> None:
+        state_mod.put(self.name, _STATE_KEY, m)
