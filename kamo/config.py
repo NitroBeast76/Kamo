@@ -42,7 +42,7 @@ CONFIG_PATH = CONFIG_DIR / "kamo.toml"
 DEFAULTS: dict[str, Any] = {
     "general": {
         "poll_interval": 5.0,   # seconds between wallpaper checks
-        "settle_delay": 20.0,   # seconds of stability before applying
+        "settle_delay": 8.0,    # seconds of stability before applying
         "log_level": "info",    # debug | info | warn | error
     },
     "adapters": {
@@ -72,7 +72,7 @@ DEFAULT_TOML = '''\
 
 [general]
 poll_interval = 5.0     # seconds between wallpaper checks
-settle_delay  = 20.0    # seconds of stability before applying
+settle_delay  = 8.0     # seconds of stability before applying
 log_level     = "info"  # debug | info | warn | error
 
 # ---------------------------------------------------------------------
