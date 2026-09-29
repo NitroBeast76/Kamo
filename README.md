@@ -1,3 +1,6 @@
+`--resync` works. Now the README.
+
+```markdown
 <div align="center">
   <img src="assets/kamo.png" alt="Kamo" width="160">
   <h1>Kamo</h1>
@@ -9,13 +12,14 @@
 Kamo is a dynamic wallpaper engine for Windows. It watches your
 wallpaper — static or live — and when it changes, it recolors every
 app you use to match. Bar, terminal, launcher, clock, music player,
-window borders: all of it shifts to the wallpaper's palette, in about
-twenty seconds, without you touching a config file.
+window borders: all of it shifts to the wallpaper's palette, in a few
+seconds, without you touching a config file.
 
 It runs in the system tray. It has no window, no settings dialog, no
 first-run wizard. It reads your wallpaper, decides what the colors
 should be, writes them into the apps you already use, and then gets
 out of the way.
+
 ---
 
 ## What it does
@@ -42,11 +46,11 @@ breaking people's dotfiles.
 
 | App | What gets themed | Reload |
 |---|---|---|
-| **yasb** | bar background, text, accents, borders, hover states | automatic |
+| **yasb** | bar background, text, accents, borders, hover states | restart |
 | **GlazeWM** | focused and unfocused window borders | CLI reload |
 | **Cava** | background, foreground, 8-stop gradient | auto if `live-config=1` |
 | **Chronoterm** | clock digits, date, border, title | restart |
-| **Flow Launcher** | query box, results, selection, scrollbar | restart |
+| **Flow Launcher** | query box, results, selection, scrollbar | restart (opt-in) |
 | **Fastfetch** | logo gradient + module key colors | none (re-read each run) |
 | **Windows Terminal** | full ANSI scheme (20 slots) | automatic |
 
@@ -61,13 +65,15 @@ More apps are one file each. See **Writing an adapter** below.
 Download `Kamo.exe`, drop it anywhere, run it. First launch writes
 `%USERPROFILE%\.config\kamo\kamo.toml` and starts watching.
 
-Add a shortcut to `shell:startup` to launch it at login.
+Add a shortcut to `shell:startup` to launch it at login. Or use the
+tray menu's **Run at login** toggle, which writes the registry entry
+for you.
 
 ### Option 2 — from source
 
 ```powershell
-git clone https://github.com/nwael/kamo
-cd kamo
+git clone https://github.com/NitroBeast76/Kamo
+cd Kamo
 pip install -e ".[dev]"
 python -m kamo
 ```
@@ -101,7 +107,7 @@ The full template — the same one Kamo writes on first run:
 
 [general]
 poll_interval = 5.0     # seconds between wallpaper checks
-settle_delay  = 20.0    # seconds of stability before applying
+settle_delay  = 8.0     # seconds of stability before applying
 log_level     = "info"  # debug | info | warn | error
 
 # ---------------------------------------------------------------------
@@ -114,6 +120,8 @@ log_level     = "info"  # debug | info | warn | error
 
 [adapters.yasb]
 enabled = true
+# restart        = true          # kill + relaunch yasb if running
+# launch_command = ["yasb"]
 # dir          = "~/.config/yasb"
 # colors_file  = "yasb_colors.css"
 # styles_file  = "styles.css"
@@ -132,6 +140,8 @@ enabled = true
 
 [adapters.glazewm]
 enabled = true
+# restart        = true          # kill + relaunch if CLI reload fails
+# launch_command = ["glazewm"]
 # config         = "~/.glzr/glazewm/config.yaml"
 # reload_command = ["glazewm", "command", "wm-reload-config"]
 # anchors = {                    # YAML anchor -> Theme role
@@ -150,9 +160,10 @@ enabled = true
 
 [adapters.chronoterm]
 enabled = true
-# config         = "~/.config/chronoterm/config.toml"
+# restart        = true
 # process_name   = "chronoterm.exe"
 # launch_command = ["cmd", "/c", "start", "", "chronoterm"]
+# config         = "%APPDATA%/chronoterm/config.toml"
 # keys = {                       # TOML key -> Theme role
 #   hours            = "accent",
 #   minutes          = "red",
@@ -169,11 +180,12 @@ enabled = true
 
 [adapters.flowlauncher]
 enabled = true
+# restart        = false         # off by default; restart interrupts typing
+# launch_command = ["Flow.Launcher"]
 # settings     = "%APPDATA%/FlowLauncher/Settings/Settings.json"
 # themes_dir   = "%APPDATA%/FlowLauncher/Themes"
 # base_theme   = "CircleDarkBlur.xaml"
 # output_theme = "Kamo.xaml"
-# theme_name   = "Kamo"
 # color_map = {                  # source hex -> Theme role
 #   "#ffffff" = "text",
 #   "#a3a3a3" = "subtext1",
@@ -204,7 +216,7 @@ enabled = true
 [adapters.windowsterminal]
 enabled = true
 # settings    = "auto"
-# scheme_name = "Interstellar"
+# scheme_name = "auto"           # "auto" = use the currently active scheme
 # ansi_map = {                   # WT scheme key -> Theme role
 #   background = "base",
 #   foreground = "text",
@@ -232,8 +244,12 @@ enabled = true
 ### Common tweaks
 
 **Slower settle, fewer applies.** If you flip through wallpapers a
-lot, raise `settle_delay` to 30 or 45 seconds. Nothing applies until
+lot, raise `settle_delay` to 15 or 30 seconds. Nothing applies until
 you stop changing.
+
+**Faster response.** Lower `settle_delay` to 5. Applies almost the
+moment the wallpaper settles. Not recommended if you use a slideshow
+or a live wallpaper engine.
 
 **Disable an app.** Set `enabled = false` in its section.
 
@@ -250,6 +266,12 @@ accent     = "accent"
 
 Anything you don't list falls back to the default.
 
+**App restart behavior.** Some apps need to be killed and relaunched
+to pick up new config. Each adapter that supports it has a `restart`
+flag. Defaults are `true` for yasb, GlazeWM, and chronoterm; `false`
+for Flow Launcher (killing it mid-query is rude). Set to `false`
+anywhere you'd rather the change apply on next launch.
+
 ---
 
 ## How the colors are chosen
@@ -263,13 +285,14 @@ to 16 colors. That gives a small set of dominant colors with weights.
 
 **Step 2 — mood.** The most prominent color supplies a hue. Every
 neutral in the palette (backgrounds, surfaces, text) inherits that
-hue but at very low chroma. A red wallpaper gives you warm dark
-greys, not dark reds. This is what keeps text readable on every
-image.
+hue, at low chroma. A red wallpaper gives you warm dark greys, not
+dark reds. That's what keeps text readable on every image.
 
 **Step 3 — the neutral ramp.** Backgrounds, surfaces, and foregrounds
 are generated at fixed lightness targets. Chroma tapers toward the
-extremes so pure black and pure white stay neutral.
+extremes so pure black and pure white stay neutral. The chroma cap is
+high enough to make the wallpaper's hue visible on a bar or a
+terminal background, low enough to keep contrast.
 
 **Step 4 — contrast floors.** Text must clear 7:1 against the
 background, subtext 4.5:1. If the ramp fails, lightness moves away
@@ -280,10 +303,17 @@ has a fixed hue anchor. Kamo scores every candidate against every
 anchor by hue distance, chroma, and prominence, then assigns the
 best match. No source color is reused.
 
-**Step 6 — primary accent.** The `blue` slot wins when it has real
-chroma. That's the convention every one of the supported apps already
-uses for "the highlight color". If the wallpaper has no blue, the
-most saturated candidate takes over.
+**Step 6 — synthesis with mood blending.** If a wallpaper has no
+candidate close enough to an anchor, Kamo synthesizes the role at a
+hue that's partway between the anchor and the mood hue. A red
+wallpaper's "blue" lands on a warm purple; its "green" lands on a
+yellow-orange. The result stays in the wallpaper's color family
+instead of anchoring to a fixed hue that looks out of place.
+
+**Step 7 — primary accent.** The most saturated candidate whose hue
+is within 60° of the mood hue wins. A purple wallpaper with one
+bright orange element gets a purple accent, not an orange one. If
+nothing in the image is close, the most saturated overall is used.
 
 The result: any wallpaper produces a palette that looks like it came
 from that wallpaper, but never fails contrast. A pastel image and a
@@ -317,16 +347,21 @@ green         #98c379   L=0.71 C=0.113 H=142.1
 ...
 ```
 
+`--resync` applies the current wallpaper once and exits. It bypasses
+the settle timer, so it finishes immediately. Useful from a script or
+when you've edited a config by hand and want to see the effect.
+
 ---
 
 ## The tray menu
 
 | Item | What it does |
 |---|---|
-| **Status** | "Ready (applied 12s ago)", "Pending…", "Paused", or "Error" |
+| **Status** | "Ready (applied 12s ago)", "Pending…", "Applying…", "Paused", or "Error" |
 | **Pause** | Stop reacting to wallpaper changes until you resume |
-| **Apply now** | Skip the settle timer and apply immediately |
-| **Resync** | Re-extract the current wallpaper and reapply |
+| **Apply now** | Skip the remaining settle window if a change is queued |
+| **Resync** | Re-extract the current wallpaper and apply immediately |
+| **Run at login** | Toggle a registry entry that launches Kamo at login |
 | **Open config folder** | Opens `~/.config/kamo/` in Explorer |
 | **Open log** | Opens `~/.config/kamo/kamo.log` |
 | **Quit** | Exit |
@@ -345,21 +380,46 @@ rotates at 512 KiB; one generation of history is kept as
 Every adapter logs its own progress under its name:
 
 ```
-[2024-11-08 14:32:01] INFO  engine started (poll=5.0s, settle=20.0s)
+[2024-11-08 14:32:01] INFO  engine started (poll=5.0s, settle=8.0s)
 [2024-11-08 14:32:01] INFO  active adapters: ['yasb', 'glazewm', 'cava', ...]
-[2024-11-08 14:45:12] INFO  wallpaper changed (file), settling 20s
-[2024-11-08 14:45:32] INFO  extracting theme from C:\...\wallpaper.jpg
-[2024-11-08 14:45:32] INFO  [yasb] wrote yasb_colors.css
-[2024-11-08 14:45:33] INFO  [glazewm] updated 2 color(s) in config.yaml
-[2024-11-08 14:45:33] INFO  [cava] wrote config
-[2024-11-08 14:45:34] WARN  [chronoterm] chronoterm not running; config will apply on next launch
-[2024-11-08 14:45:34] INFO  [flowlauncher] wrote Kamo.xaml
-[2024-11-08 14:45:34] INFO  [fastfetch] wrote config.jsonc
-[2024-11-08 14:45:34] INFO  [windowsterminal] updated 20 color(s) in scheme 'Interstellar'
+[2024-11-08 14:45:12] INFO  wallpaper changed (file), settling 8s
+[2024-11-08 14:45:20] INFO  extracting theme from C:\...\wallpaper.jpg
+[2024-11-08 14:45:20] INFO  [yasb] wrote yasb_colors.css
+[2024-11-08 14:45:21] INFO  [glazewm] updated 2 color(s) in config.yaml
+[2024-11-08 14:45:21] INFO  [cava] wrote config
+[2024-11-08 14:45:21] WARN  [chronoterm] chronoterm not running; config applies on next launch
+[2024-11-08 14:45:21] INFO  [flowlauncher] wrote Kamo.xaml
+[2024-11-08 14:45:21] INFO  [fastfetch] wrote config.jsonc (17 inline)
+[2024-11-08 14:45:22] INFO  [windowsterminal] updated 20 color(s) in scheme 'Interstellar'
 ```
 
 When something goes wrong, the log names the adapter and the reason.
 One adapter failing never stops the others.
+
+---
+
+## Known issues
+
+**yasb v2.0.7 may ignore live stylesheet changes.** Kamo writes
+`~/.config/yasb/styles.css` correctly — you can verify by opening the
+file — but the running yasb process may not pick up the change, even
+after being killed and relaunched. If your bar doesn't recolor:
+
+1. Check the log for `[yasb] updated styles.css (N var, M hex)` with
+   a nonzero count. If N and M are both zero, Kamo didn't write
+   anything (unrelated bug).
+2. Open `~/.config/yasb/styles.css` and confirm the `:root` block
+   contains the theme's hexes. If it does, the file is correct.
+3. Restart yasb manually (`Stop-Process -Name yasb; yasb`). If the
+   bar still doesn't update, the app is caching the parsed stylesheet
+   internally. That's a yasb-side issue, not Kamo's. Set
+   `enabled = false` for yasb in `kamo.toml` and switch to a bar
+   that reads its stylesheet on every change.
+
+**Concurrent applies.** The engine guards against two applies running
+at once via an in-progress flag. If you see
+`apply already in progress; skipping duplicate` in the log, that's
+the guard doing its job — not an error.
 
 ---
 
@@ -426,6 +486,7 @@ pyinstaller `
   --noconsole `
   --name Kamo `
   --icon kamo.ico `
+  --add-data "kamo.ico;." `
   --hidden-import=pystray._win32 `
   --hidden-import=mss.windows `
   --hidden-import=psutil `
@@ -463,11 +524,21 @@ and re-dumping it erases all of that. Kamo does surgical text
 substitution where possible, real parsing only where the format is
 strict (Windows Terminal's JSON).
 
+**Why auto-classify hexes instead of requiring a color map?** Because
+writing a map for every hex in every config file is tedious and
+error-prone. Kamo classifies each hardcoded hex by its OKLCH position
+— hue for saturated colors, lightness for neutrals — and remembers
+what it wrote in `state.json` so subsequent applies can find those
+hexes even though the originals are gone. The `color_map` config
+override exists for the case where auto-classification gets one
+wrong, but most users never touch it.
+
 **Why a settle timer?** Because wallpapers change constantly when
 you're browsing a gallery, dragging a Lively scene around, or waiting
 for a slideshow. Applying on every intermediate frame would thrash
-every app on the system. Twenty seconds of quiet is the right amount:
-long enough to filter noise, short enough to feel instant.
+every app on the system. Eight seconds of quiet is the default:
+long enough to filter slideshows, short enough to feel responsive
+when you deliberately change the wallpaper.
 
 **Why does the tray icon change color?** So you can tell at a glance
 that Kamo is alive, that it applied something, and which accent it
@@ -496,3 +567,22 @@ Everything else is standard library.
 ## License
 
 MIT. See `LICENSE`.
+```
+
+## What changed from your version
+
+1. **Intro** — "in about twenty seconds" → "in a few seconds"
+2. **Config template** — `settle_delay = 20.0` → `8.0`; added `restart` and `launch_command` lines to each adapter; fixed `scheme_name = "Interstellar"` → `"auto"`
+3. **Common tweaks** — "raise to 30 or 45" → "15 or 30"; added "Faster response" and "App restart behavior" entries
+4. **How the colors are chosen** — added Step 6 (mood blending) and renumbered; expanded Step 3 with the chroma cap explanation
+5. **Log sample** — `settle=20.0s` → `settle=8.0s`; `wallpaper changed ... settling 20s` → `settling 8s`
+6. **Known issues section** — new. Documents the yasb v2.0.7 issue and how to diagnose it. Documents the concurrent-apply guard log message.
+7. **Build command** — added `--add-data "kamo.ico;."` (needed for the runtime icon to work in the exe)
+8. **Design notes** — added "Why auto-classify hexes" note; updated the settle-timer paragraph from "twenty seconds" to "eight seconds"
+
+Save it, then:
+
+```powershell
+git add README.md
+git commit -m "README: reflect current defaults and behavior"
+git push
