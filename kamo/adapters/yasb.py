@@ -473,14 +473,33 @@ class YasbAdapter(Adapter):
     # ------------------------------------------------------------------
 
     def _load_state_map(self) -> dict[str, str]:
+        """Load the persisted hex -> role map.
+
+        Keys are normalized to the base 6-digit form without a
+        leading `#`, matching what `_substitute_hexes` uses for
+        lookups. Legacy entries that were saved with a `#` prefix
+        are stripped on load.
+        """
         stored = state_mod.get(self.name, _STATE_KEY, {})
         if not isinstance(stored, dict):
             return {}
-        return {
-            k.lower(): v
-            for k, v in stored.items()
-            if isinstance(k, str) and isinstance(v, str)
-        }
+        result: dict[str, str] = {}
+        for k, v in stored.items():
+            if not isinstance(k, str) or not isinstance(v, str):
+                continue
+            key = k.lstrip("#").lower()
+            result[key] = v
+        return result
 
     def _save_state_map(self, m: dict[str, str]) -> None:
-        state_mod.put(self.name, _STATE_KEY, m)
+        """Persist the hex -> role map.
+
+        Keys are stored without a leading `#` so the format is
+        consistent and every entry round-trips.
+        """
+        normalized = {
+            k.lstrip("#").lower(): v
+            for k, v in m.items()
+            if isinstance(k, str) and isinstance(v, str)
+        }
+        state_mod.put(self.name, _STATE_KEY, normalized)

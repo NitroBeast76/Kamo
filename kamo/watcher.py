@@ -24,9 +24,10 @@ Both are safe to call from any thread. They do not raise on the
 "nothing available" path; they return ("", "") or None.
 """
 
-from __future__ import annotations
+from __future__ import annotations 
 
 import hashlib
+from . import log
 import os
 from pathlib import Path
 from typing import Literal
@@ -157,16 +158,27 @@ def get_image(kind: str) -> str | None:
     For kind == "file": returns the registry wallpaper path.
     For kind == "screen": captures a frame to FRAME_PATH and returns
                           that path.
+
+    Logs a specific reason when it returns None so the caller's
+    generic "no image available" error is diagnosable.
     """
     if kind == "file":
         path = _static_path()
-        if path and Path(path).exists():
-            return path
-        return None
+        if not path:
+            log.warn(
+                "registry has no wallpaper path "
+                "(HKCU\\Control Panel\\Desktop\\WallPaper is empty)"
+            )
+            return None
+        if not Path(path).exists():
+            log.warn(f"wallpaper path does not exist on disk: {path}")
+            return None
+        return path
 
     if kind == "screen":
         return _capture_frame()
 
+    log.warn(f"unknown wallpaper kind: {kind!r}")
     return None
 
 
