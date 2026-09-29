@@ -11,6 +11,7 @@
   </p>
 </div>
 
+<img src="assets/demo.gif" alt="Kamo in action" width="100%">
 ---
 
 Kamo watches your desktop wallpaper and quietly recolors every app
