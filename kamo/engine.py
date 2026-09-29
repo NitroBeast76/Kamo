@@ -23,9 +23,9 @@ Order of operations on a wallpaper change:
     7. Emit a callback so the tray can refresh its icon/menu.
 
 If the wallpaper changes again mid-settle, step 2 re-pokes and the
-timer restarts. If it changes mid-apply, step 6 completes (partial
-state is possible for a fraction of a second), then the next poke
-starts a fresh cycle.
+timer restarts. If it changes mid-apply, an in-progress flag
+(`_applying`) causes the duplicate fire to be dropped instead of
+racing the current one. Only one apply runs at a time.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ class Engine:
 
         general = config_mod.get_general(self.config)
         self.poll_interval: float = float(general.get("poll_interval", 5.0))
-        self.settle_delay: float = float(general.get("settle_delay", 20.0))
+        self.settle_delay: float = float(general.get("settle_delay", 8.0))
 
         self.adapters = load_adapters(self.config)
         log.info(f"active adapters: {[a.name for a in self.adapters]}")
@@ -68,6 +68,7 @@ class Engine:
         self._last_error: str | None = None
         self._last_apply_at: float | None = None
         self._pending: bool = False          # settle timer running?
+        self._applying: bool = False         # apply currently running?
         self._state_lock = threading.Lock()
 
         # Status callback list; engine invokes all of them.
@@ -136,8 +137,9 @@ class Engine:
     def resync(self) -> None:
         """Forget the last fingerprint and re-evaluate immediately.
 
-        Useful after the user has manually edited a config and wants
-        Kamo to reapply without waiting for a wallpaper change.
+        Pokes the settle timer with the current fingerprint, so the
+        apply fires after `settle_delay` seconds. Use `apply_current()`
+        to apply synchronously with no delay.
         """
         try:
             self._last_fp = watcher.current()
@@ -148,12 +150,27 @@ class Engine:
         log.info("resync requested")
 
     def apply_now(self) -> None:
-        """Skip the settle window and apply on the next tick.
+        """Skip the remaining settle window if a change is pending.
 
-        The tray uses this when the user picks "Apply now" and doesn't
-        want to wait `settle_delay` seconds.
+        No-op if nothing is queued. To force a fresh apply from the
+        current wallpaper, use `apply_current()`.
         """
         self._settle.flush()
+
+    def apply_current(self) -> None:
+        """Build a theme from the current wallpaper and apply it now.
+
+        Blocks until the apply completes. Bypasses the settle timer
+        entirely. Used by the CLI's `--resync` and by the tray's
+        Resync action. Safe to call from any thread; a call while
+        another apply is running is dropped with a log line.
+        """
+        try:
+            fp = watcher.current()
+        except Exception as e:
+            log.warn(f"apply_current: watcher read failed: {e}")
+            fp = ("", "")
+        self._apply(fp)
 
     def on_status(self, cb: StatusCallback) -> None:
         """Register a callback invoked after every apply attempt."""
@@ -187,6 +204,11 @@ class Engine:
     def is_pending(self) -> bool:
         with self._state_lock:
             return self._pending
+
+    @property
+    def is_applying(self) -> bool:
+        with self._state_lock:
+            return self._applying
 
     @property
     def adapter_names(self) -> list[str]:
@@ -232,8 +254,20 @@ class Engine:
     # ------------------------------------------------------------------
 
     def _apply(self, payload) -> None:
-        """Called by the settle timer. Runs on its worker thread."""
+        """Called by the settle timer. Runs on its worker thread.
+
+        An in-progress flag guards against concurrent applies: if a
+        second settle timer fires while the first is still running
+        (possible if two pokes land a few hundred ms apart and the
+        first timer already entered this method), the second call is
+        dropped. That's what kept yasb from being killed twice in the
+        same second.
+        """
         with self._state_lock:
+            if self._applying:
+                log.info("apply already in progress; skipping duplicate")
+                return
+            self._applying = True
             self._pending = False
 
         kind = payload[0] if isinstance(payload, tuple) and payload else ""
@@ -251,13 +285,19 @@ class Engine:
             error = f"palette build failed: {e}"
             log.error(error)
 
-        if theme is not None:
-            self._dispatch(theme)
-
-        with self._state_lock:
-            self._last_theme = theme
-            self._last_error = error
-            self._last_apply_at = time.time()
+        try:
+            if theme is not None:
+                self._dispatch(theme)
+        finally:
+            # Always clear the in-progress flag and update state, even
+            # if dispatch raised. Without the finally, a crash inside
+            # _dispatch would leave _applying=True forever and Kamo
+            # would stop applying entirely.
+            with self._state_lock:
+                self._last_theme = theme
+                self._last_error = error
+                self._last_apply_at = time.time()
+                self._applying = False
 
         self._notify(theme, error)
 

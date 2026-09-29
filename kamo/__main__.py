@@ -32,7 +32,6 @@ import argparse
 import os
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -65,11 +64,15 @@ def _cmd_once(image_path: str) -> int:
 
 
 def _cmd_resync() -> int:
+    """One-shot synchronous apply. Bypasses the settle timer.
+
+    Builds an engine, triggers a fresh theme extraction + apply, and
+    returns when the apply completes. No watcher thread is started;
+    the process exits as soon as the apply is done.
+    """
     cfg = config_mod.load()
     engine = Engine(cfg)
-    engine.apply_now()
-    # Give the worker a moment to finish before we exit.
-    time.sleep(0.5)
+    engine.apply_current()
     return 0
 
 
@@ -187,7 +190,10 @@ def _run_tray(engine: Engine) -> int:
         engine.apply_now()
 
     def on_resync(icon, item):
-        engine.resync()
+        # Synchronous re-apply from the current wallpaper. Bypasses
+        # the settle timer, so the tray doesn't sit on "Pending…" for
+        # `settle_delay` seconds after the user clicks.
+        engine.apply_current()
 
     def on_toggle_autostart(icon, item):
         if autostart.is_enabled():
@@ -219,6 +225,8 @@ def _run_tray(engine: Engine) -> int:
     def status_text(item):
         if engine.is_paused:
             return "Paused"
+        if engine.is_applying:
+            return "Applying…"
         if engine.is_pending:
             return "Pending…"
         if engine.last_error:
