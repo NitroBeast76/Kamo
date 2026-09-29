@@ -1,4 +1,3 @@
-```markdown
 <div align="center">
   <img src="assets/kamo.png" alt="Kamo" width="160">
   <h1>Kamo</h1>
