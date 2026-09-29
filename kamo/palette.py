@@ -18,9 +18,11 @@ Approach:
     5. Assign the 9 semantic/extras roles by nearest-hue matching
        against fixed anchors (red=25, green=145, etc.), excluding
        the accent. If nothing in the image is close to an anchor,
-       synthesize from the anchor. Otherwise, clamp the matched
-       color into a usable accent band so dark wallpapers still
-       produce visible highlights.
+       synthesize a hue blended toward the mood hue so the accent
+       stays in the wallpaper's family instead of anchoring to a
+       fixed color. Otherwise, clamp the matched color into a usable
+       accent band so dark wallpapers still produce visible
+       highlights.
     6. Choose accent_text by whichever of black/white contrasts
        better on accent.
 """
@@ -54,6 +56,15 @@ HUE_ANCHORS: dict[str, float] = {
 # using a poor match. Keeps semantic roles recognizable on
 # monochromatic wallpapers.
 HUE_SYNTHESIS_THRESHOLD: float = 50.0
+
+# How much a synthesized accent's hue is pulled toward the mood hue.
+# 0 = synthesized colors keep their anchor hue (blue stays blue on a
+# red wallpaper); 1 = they fully adopt the mood hue (everything
+# becomes a shade of the wallpaper). 0.5 is a good middle: blue
+# drifts to purple on a red wallpaper, green drifts to yellow-orange,
+# and the whole palette reads as one family without collapsing into
+# a single hue.
+MOOD_BLEND: float = 0.5
 
 # How far from the mood hue a candidate can be and still count as
 # "in the wallpaper's color family" for the purpose of picking the
@@ -95,6 +106,23 @@ CONTRAST_FLOORS = [
     ("text",     "surface0", 6.0),
     ("subtext0", "surface0", 3.5),
 ]
+
+
+# ---------------------------------------------------------------------
+# Hue helpers
+# ---------------------------------------------------------------------
+
+def _blend_hue(a: float, b: float, t: float) -> float:
+    """Interpolate from hue a to hue b along the shorter arc.
+
+    t=0 returns a, t=1 returns b. Result in [0, 360).
+
+    Example: blending 250 (blue) toward 27 (red) by 0.5 goes the
+    short way around the wheel (through purple/magenta) rather than
+    the long way through green, yellow, and orange.
+    """
+    diff = ((b - a + 180.0) % 360.0) - 180.0
+    return (a + diff * t) % 360.0
 
 
 # ---------------------------------------------------------------------
@@ -151,6 +179,7 @@ def _usable_accent(hex_c: str,
 
 
 def _assign_accents(candidates: list[tuple[str, float]],
+                    mood_hue: float,
                     exclude: set[str] | None = None,
                     hue_threshold: float = HUE_SYNTHESIS_THRESHOLD,
                     ) -> dict[str, str]:
@@ -160,9 +189,14 @@ def _assign_accents(candidates: list[tuple[str, float]],
     just the primary accent). Colors in it are skipped.
 
     If the closest available candidate is more than `hue_threshold`
-    degrees from the role's target hue, synthesize at the anchor
-    instead. Otherwise, take the best candidate and clamp it into a
-    usable accent band so it doesn't come back nearly black.
+    degrees from the role's target hue, synthesize at a hue blended
+    toward the wallpaper's mood hue. Otherwise, take the best
+    candidate and clamp it into a usable accent band so it doesn't
+    come back nearly black.
+
+    `mood_hue` is the dominant hue of the wallpaper. Synthesized
+    roles blend `MOOD_BLEND` of the way toward it so their hue stays
+    in the wallpaper's color family.
     """
     used: set[str] = set(exclude or ())
     assigned: dict[str, str] = {}
@@ -184,9 +218,12 @@ def _assign_accents(candidates: list[tuple[str, float]],
                 best_hue_dist = hd
 
         if best_raw is None or best_hue_dist > hue_threshold:
-            # Nothing close enough in the image. Synthesize at the
-            # anchor so the role is visually recognizable.
-            result = C.oklch_to_hex(0.62, 0.13, target_hue)
+            # Nothing close enough in the image. Synthesize at a hue
+            # blended toward the mood so the accent stays in the
+            # wallpaper's family instead of anchoring to a fixed
+            # color that looks out of place.
+            blended = _blend_hue(target_hue, mood_hue, MOOD_BLEND)
+            result = C.oklch_to_hex(0.62, 0.13, blended)
         else:
             result = _usable_accent(best_raw)
             used.add(best_raw)  # never pick this raw candidate again
@@ -259,7 +296,8 @@ def _neutral_ramp(mood_hue: float, mood_chroma: float) -> dict[str, str]:
     lightness reads as "tinted" rather than "dark".
     """
     # Cap the mood chroma. A vivid wallpaper should tint the neutrals,
-    # not recolor them.
+    # not recolor them. 0.10 is high enough to be visible on a bar
+    # or a terminal, low enough to keep text readable.
     base_chroma = min(mood_chroma, 0.10)
     out: dict[str, str] = {}
 
@@ -342,7 +380,7 @@ def _from_candidates(candidates: list[tuple[str, float]]) -> Theme:
     exclude: set[str] = {accent}
     if accent_raw:
         exclude.add(accent_raw)
-    accents = _assign_accents(candidates, exclude=exclude)
+    accents = _assign_accents(candidates, dominant_hue, exclude=exclude)
     accent_text = _accent_text(accent)
 
     return _assemble(neutrals, accents, accent, accent_text)
