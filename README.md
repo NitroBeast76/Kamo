@@ -1,24 +1,23 @@
-`--resync` works. Now the README.
-
 ```markdown
 <div align="center">
   <img src="assets/kamo.png" alt="Kamo" width="160">
   <h1>Kamo</h1>
-  <p><em>Kamo is shy, so it tries to blend in with the wallpaper.</em></p>
+  <p><em>Kamo is shy. It would rather wear your wallpaper's colors than its own.</em></p>
 </div>
 
 ---
 
-Kamo is a dynamic wallpaper engine for Windows. It watches your
-wallpaper — static or live — and when it changes, it recolors every
-app you use to match. Bar, terminal, launcher, clock, music player,
-window borders: all of it shifts to the wallpaper's palette, in a few
-seconds, without you touching a config file.
+Kamo watches your desktop wallpaper and quietly recolors every app
+you use to match. You change the wallpaper — a bar, a terminal, a
+clock, a music player, some window borders, and a whole menagerie of
+other tiny programs all shift into the same palette. In a few
+seconds. Without you touching a config file.
 
-It runs in the system tray. It has no window, no settings dialog, no
-first-run wizard. It reads your wallpaper, decides what the colors
-should be, writes them into the apps you already use, and then gets
-out of the way.
+It lives in the system tray. There is no window. There is no settings
+dialog. There is no first-run wizard asking if you'd like to
+personalize your experience. It reads your wallpaper, decides what
+colors look right, writes them into the apps you already have, and
+then goes back to being invisible.
 
 ---
 
@@ -26,19 +25,36 @@ out of the way.
 
 1. Watches the current wallpaper (registry for static, screen grab
    for live).
-2. Waits until it's been stable for a few seconds — no thrashing
-   while you browse a gallery or drag a Lively scene around.
+2. Waits until the wallpaper has been stable for a few seconds. You
+   can drag a Lively scene around, click through ten wallpapers in a
+   gallery, or leave a slideshow running. Kamo doesn't care until you
+   stop.
 3. Extracts a color palette from the image.
 4. Assigns that palette to named roles: `base`, `text`, `accent`,
    `red`, `green`, and so on.
 5. Writes those roles into every supported app's config file.
-6. Tells the app to reload, or notes that it will pick up on next
-   launch.
+6. Tells the app to reload, or notes that it will pick up the change
+   the next time you launch it.
 
-That's the whole program. There's no theme marketplace, no cloud
-sync, no account. It's about fifty kilobytes of logic wrapped around
-the parts that are genuinely hard: perceptual color math and not
-breaking people's dotfiles.
+That's the whole program. No theme marketplace. No cloud sync. No
+account. Just about fifty kilobytes of Python wrapped around the
+parts that are genuinely hard: perceptual color math, and not
+breaking anyone's dotfiles.
+
+---
+
+## What Kamo is not
+
+- **Not a theme manager.** It doesn't store themes, load themes, or
+  let you browse themes. There is exactly one theme at a time, and
+  it's the one your wallpaper is currently suggesting.
+- **Not a wallpaper engine.** It doesn't set your wallpaper. You do
+  that. Kamo reacts.
+- **Not a daemon for your other daemons.** It writes config files and
+  restarts processes. That's the whole trick.
+- **Not going to fix your apps' reload bugs.** If an app refuses to
+  read its own config, Kamo can't make it. See the yasb entry under
+  *Known issues*.
 
 ---
 
@@ -54,7 +70,8 @@ breaking people's dotfiles.
 | **Fastfetch** | logo gradient + module key colors | none (re-read each run) |
 | **Windows Terminal** | full ANSI scheme (20 slots) | automatic |
 
-More apps are one file each. See **Writing an adapter** below.
+More apps are one file each. See **Writing an adapter** — it's the
+easiest contribution to this project.
 
 ---
 
@@ -63,12 +80,15 @@ More apps are one file each. See **Writing an adapter** below.
 ### Option 1 — the .exe
 
 [Download Kamo.exe](https://github.com/NitroBeast76/Kamo/releases/latest)
-from the releases page. Drop it anywhere, run it. First launch writes
-`%USERPROFILE%\.config\kamo\kamo.toml` and starts watching.
+from the releases page. Drop it anywhere. Run it.
 
-Add a shortcut to `shell:startup` to launch it at login. Or use the
-tray menu's **Run at login** toggle, which writes the registry entry
-for you.
+First launch writes `%USERPROFILE%\.config\kamo\kamo.toml` and starts
+watching. There's no installer, no registry dancing, no UAC prompt.
+Double-click and you're done.
+
+Add a shortcut to `shell:startup` to launch it at login. Or right-click
+the tray icon and toggle **Run at login**, which writes the registry
+entry for you.
 
 ### Option 2 — from source
 
@@ -79,7 +99,9 @@ pip install -e ".[dev]"
 python -m kamo
 ```
 
-Requires Python 3.10 or newer.
+Requires Python 3.10 or newer. If you're on 3.11+, `tomllib` is in
+the standard library. On 3.10, `tomli` gets installed as a
+dependency. Kamo doesn't care which one it uses.
 
 ---
 
@@ -93,7 +115,7 @@ menu (**Open config folder**) or directly:
 ```
 
 Every key is optional. Delete a line and the built-in default takes
-over. Delete the whole file and it's regenerated.
+over. Delete the whole file and it's regenerated on the next launch.
 
 The full template — the same one Kamo writes on first run:
 
@@ -246,13 +268,17 @@ enabled = true
 
 **Slower settle, fewer applies.** If you flip through wallpapers a
 lot, raise `settle_delay` to 15 or 30 seconds. Nothing applies until
-you stop changing.
+you stop changing. The default of 8 is a compromise: long enough to
+filter out a slideshow, short enough to feel immediate when you
+deliberately switch.
 
 **Faster response.** Lower `settle_delay` to 5. Applies almost the
-moment the wallpaper settles. Not recommended if you use a slideshow
-or a live wallpaper engine.
+moment the wallpaper settles. Don't do this if you use a slideshow or
+a live wallpaper engine — you'll hammer every app on your system
+every few seconds.
 
-**Disable an app.** Set `enabled = false` in its section.
+**Disable an app.** Set `enabled = false` in its section. Kamo won't
+touch it at all.
 
 **Different yasb variable names.** If your `styles.css` uses `--bg`
 and `--fg` instead of `--background` and `--text`, override the
@@ -268,21 +294,22 @@ accent     = "accent"
 Anything you don't list falls back to the default.
 
 **App restart behavior.** Some apps need to be killed and relaunched
-to pick up new config. Each adapter that supports it has a `restart`
-flag. Defaults are `true` for yasb, GlazeWM, and chronoterm; `false`
-for Flow Launcher (killing it mid-query is rude). Set to `false`
-anywhere you'd rather the change apply on next launch.
+to pick up new config. Each adapter that supports this has a
+`restart` flag. Defaults are `true` for yasb, GlazeWM, and
+chronoterm; `false` for Flow Launcher (killing a launcher while
+someone is mid-search is the kind of thing that gets you uninstalled).
 
 ---
 
 ## How the colors are chosen
 
-Kamo does not average pixels or run k-means. It works in **OKLCH**, a
-perceptual color space, and it thinks in terms of roles rather than
-colors.
+Kamo does not average pixels. It does not run k-means on a thumbnail
+and hope for the best. It works in **OKLCH**, a perceptual color
+space, and it thinks in terms of roles rather than colors.
 
 **Step 1 — extract.** The image is thumbnailed to 200px and quantized
 to 16 colors. That gives a small set of dominant colors with weights.
+Fast, deterministic, and good enough.
 
 **Step 2 — mood.** The most prominent color supplies a hue. Every
 neutral in the palette (backgrounds, surfaces, text) inherits that
@@ -297,7 +324,8 @@ terminal background, low enough to keep contrast.
 
 **Step 4 — contrast floors.** Text must clear 7:1 against the
 background, subtext 4.5:1. If the ramp fails, lightness moves away
-from the background until it passes or runs out of room.
+from the background until it passes or runs out of room. Kamo would
+rather slightly darken your text than ship you an unreadable theme.
 
 **Step 5 — accents.** Each accent role (`red`, `green`, `blue`, …)
 has a fixed hue anchor. Kamo scores every candidate against every
@@ -368,7 +396,9 @@ when you've edited a config by hand and want to see the effect.
 | **Quit** | Exit |
 
 The tray icon reflects the current accent color. When an apply fails,
-it flips to red and the title shows the error.
+it flips to red and the title shows the error. That way you can tell
+at a glance that Kamo is alive, that it did something, and what color
+it picked. It's the only visible output the app has.
 
 ---
 
@@ -376,7 +406,8 @@ it flips to red and the title shows the error.
 
 Everything goes to `%USERPROFILE%\.config\kamo\kamo.log`. The file
 rotates at 512 KiB; one generation of history is kept as
-`kamo.log.1`.
+`kamo.log.1`. When something looks wrong, this file is the only
+witness.
 
 Every adapter logs its own progress under its name:
 
@@ -394,17 +425,25 @@ Every adapter logs its own progress under its name:
 [2024-11-08 14:45:22] INFO  [windowsterminal] updated 20 color(s) in scheme 'Interstellar'
 ```
 
-When something goes wrong, the log names the adapter and the reason.
-One adapter failing never stops the others.
+One adapter failing never stops the others. If GlazeWM throws, cava
+still gets its new gradient. If fastfetch writes garbage, WT still
+gets its new scheme. The whole design assumption is that any
+individual app can be broken and the rest of the system keeps
+working.
 
 ---
 
 ## Known issues
 
 **yasb v2.0.7 may ignore live stylesheet changes.** Kamo writes
-`~/.config/yasb/styles.css` correctly — you can verify by opening the
-file — but the running yasb process may not pick up the change, even
-after being killed and relaunched. If your bar doesn't recolor:
+`~/.config/yasb/styles.css` correctly. You can open the file and see
+the theme's colors. yasb reads that same file. And yet, sometimes,
+the bar just sits there wearing last week's palette like nothing
+happened.
+
+This appears to be a yasb-side caching problem, not a Kamo one, and
+we've been unable to reproduce it on demand. If your bar doesn't
+recolor:
 
 1. Check the log for `[yasb] updated styles.css (N var, M hex)` with
    a nonzero count. If N and M are both zero, Kamo didn't write
@@ -412,10 +451,10 @@ after being killed and relaunched. If your bar doesn't recolor:
 2. Open `~/.config/yasb/styles.css` and confirm the `:root` block
    contains the theme's hexes. If it does, the file is correct.
 3. Restart yasb manually (`Stop-Process -Name yasb; yasb`). If the
-   bar still doesn't update, the app is caching the parsed stylesheet
-   internally. That's a yasb-side issue, not Kamo's. Set
-   `enabled = false` for yasb in `kamo.toml` and switch to a bar
-   that reads its stylesheet on every change.
+   bar still doesn't update, yasb is caching the parsed stylesheet
+   internally. Set `enabled = false` for yasb in `kamo.toml` and
+   either live with it or switch to a bar that reads its stylesheet
+   on every change.
 
 **Concurrent applies.** The engine guards against two applies running
 at once via an in-progress flag. If you see
@@ -427,10 +466,12 @@ the guard doing its job — not an error.
 ## Supported wallpaper engines
 
 For static wallpapers, Kamo reads the registry key that Windows
-itself uses — no polling, no guesswork.
+itself uses. No polling, no guesswork, no screenshots. The wallpaper
+is whatever the registry says it is.
 
-For live wallpapers, there is no OS event when a frame changes. Kamo
-detects a running live-wallpaper process and falls back to a
+For live wallpapers, there is no OS event when a frame changes.
+Windows has no idea a video is playing behind your desktop icons.
+Kamo detects a running live-wallpaper process and falls back to a
 low-resolution screen grab. It's fast enough to run every five
 seconds and precise enough to notice a wallpaper swap. Known engines:
 
@@ -446,8 +487,8 @@ line.
 
 ## Writing an adapter
 
-Each app Kamo supports has its own small file in
-`kamo/adapters/`. An adapter answers two questions:
+Each app Kamo supports has its own small file in `kamo/adapters/`.
+An adapter answers two questions:
 
 ```python
 class MyAppAdapter(Adapter):
@@ -471,7 +512,10 @@ To add an app:
    know what's overridable.
 
 That's the whole process. The watcher, palette builder, settle timer,
-and tray don't change.
+and tray don't change. If you can write a function that opens a
+config file and changes some hex codes, you can write an adapter.
+The base class handles process restarts, path resolution, state
+tracking, and logging for you.
 
 If you're adding an adapter for an app other people use, open a PR —
 the code is small enough to review in one sitting.
@@ -484,7 +528,7 @@ the code is small enough to review in one sitting.
 pip install -e ".[dev]"
 pyinstaller `
   --onefile `
-  --noconsole `
+  --console `
   --name Kamo `
   --icon kamo.ico `
   --add-data "kamo.ico;." `
@@ -492,14 +536,31 @@ pyinstaller `
   --hidden-import=mss.windows `
   --hidden-import=psutil `
   --hidden-import=PIL._tkinter_finder `
-  kamo\__main__.py
+  run_kamo.py
 ```
 
-Output: `dist\Kamo.exe`. Roughly 30 MB with all dependencies.
+Output: `dist\Kamo.exe`. Roughly 30 MB with all dependencies
+included. No Python required on the target machine.
+
+**Why `run_kamo.py` and not `kamo\__main__.py`?** Because PyInstaller
+runs its entry script as a top-level module, not as part of a
+package. Relative imports like `from . import config` fail with
+`ImportError: attempted relative import with no known parent
+package`. The launcher at the project root does an absolute import
+and everything works.
+
+**Why `--console` and not `--noconsole`?** Because `--noconsole`
+builds a Windows GUI subsystem executable, which means `print()`
+goes nowhere. The CLI flags (`--version`, `--once`, `--resync`) all
+become silent. The launcher hides the console window in the first
+100 milliseconds when no CLI arguments are present, so tray mode
+still looks clean. But CLI output works.
 
 For faster cold start, replace `--onefile` with `--onedir` and ship
-the resulting folder. `--onefile` unpacks itself to a temp directory
-on every launch, which costs 1–3 seconds. `--onedir` starts instantly.
+the resulting folder as a zip. `--onefile` unpacks itself to a temp
+directory on every launch, which costs 1–3 seconds. `--onedir` starts
+instantly. Users pay with a slightly worse download experience; you
+pay with a slightly larger upload.
 
 ---
 
@@ -511,39 +572,54 @@ A few decisions that look odd until you've used the tool.
 percent apart in sRGB can be ten percent or fifty percent apart to
 the eye, depending on hue. OKLCH is perceptually uniform: equal
 numeric steps look like equal visual steps. Every brighten, darken,
-and contrast check in Kamo happens in OKLCH.
+and contrast check in Kamo happens in OKLCH. If you want to know
+what a color is doing, you look at its OKLCH coordinates, and
+everything is legible. This is the single biggest reason the palettes
+don't come back looking wrong.
 
 **Why roles instead of color names?** Apps don't agree on what "red"
 means. yasb wants `--redFlash`. GlazeWM wants a hex for "focused
-border". Cava wants eight gradient stops. The only thing that
-generalizes is a role set: `base`, `text`, `accent`, `red`. Each
-adapter translates roles into its app's vocabulary.
+border". Cava wants eight gradient stops. Fastfetch wants five key
+colors and a logo ramp. The only thing that generalizes is a role
+set: `base`, `text`, `accent`, `red`. Each adapter translates roles
+into its app's vocabulary. If you want to add an app, you write a
+translator, not a color picker.
 
 **Why not parse configs?** Because every one of them is hand-edited
 and full of comments. Loading a YAML or JSONC file through a parser
-and re-dumping it erases all of that. Kamo does surgical text
-substitution where possible, real parsing only where the format is
-strict (Windows Terminal's JSON).
+and re-dumping it erases all of that. Users who spend an hour
+tuning their `styles.css` don't want Kamo flattening it into JSON on
+the first apply. Kamo does surgical text substitution where possible,
+real parsing only where the format is strict (Windows Terminal's
+JSON) or the target app would break otherwise.
 
-**Why auto-classify hexes instead of requiring a color map?** Because
-writing a map for every hex in every config file is tedious and
-error-prone. Kamo classifies each hardcoded hex by its OKLCH position
-— hue for saturated colors, lightness for neutrals — and remembers
-what it wrote in `state.json` so subsequent applies can find those
-hexes even though the originals are gone. The `color_map` config
-override exists for the case where auto-classification gets one
-wrong, but most users never touch it.
+**Why auto-classify hexes instead of requiring a color map?**
+Because writing a map for every hex in every config file is tedious
+and error-prone. Kamo classifies each hardcoded hex by its OKLCH
+position — hue for saturated colors, lightness for neutrals — and
+remembers what it wrote in `state.json` so subsequent applies can
+find those hexes even though the originals are gone. The `color_map`
+config override exists for the case where auto-classification gets
+one wrong, but most users never touch it. When it works, it works
+silently. When it doesn't, you have a config knob.
 
 **Why a settle timer?** Because wallpapers change constantly when
 you're browsing a gallery, dragging a Lively scene around, or waiting
-for a slideshow. Applying on every intermediate frame would thrash
-every app on the system. Eight seconds of quiet is the default:
-long enough to filter slideshows, short enough to feel responsive
-when you deliberately change the wallpaper.
+for a slideshow to move on. Applying on every intermediate frame
+would thrash every app on the system. Eight seconds of quiet is the
+default: long enough to filter slideshows, short enough to feel
+responsive when you deliberately change the wallpaper. If you want
+it to feel instant, drop it to 5. If you want to be left alone while
+you browse, raise it to 30.
 
 **Why does the tray icon change color?** So you can tell at a glance
 that Kamo is alive, that it applied something, and which accent it
-chose. It's the only visible output the app has.
+chose. It's the only visible output the app has. A tray icon that
+never changes might as well be a crashed process.
+
+**Why "Kamo"?** Because it hides. It blends in. It picks up the
+colors of whatever's around it. The name is a small joke that only
+makes sense if you've watched it work.
 
 ---
 
@@ -559,7 +635,7 @@ bundled into the exe):
 - `pystray` — system tray
 - `mss` — screen grab for live wallpapers
 - `psutil` — process detection for live wallpapers
-- `tomli` — TOML parsing on Python 3.10 only
+- `tomli` — TOML parsing on Python 3.10 only (3.11+ uses the stdlib)
 
 Everything else is standard library.
 
@@ -568,22 +644,3 @@ Everything else is standard library.
 ## License
 
 MIT. See `LICENSE`.
-```
-
-## What changed from your version
-
-1. **Intro** — "in about twenty seconds" → "in a few seconds"
-2. **Config template** — `settle_delay = 20.0` → `8.0`; added `restart` and `launch_command` lines to each adapter; fixed `scheme_name = "Interstellar"` → `"auto"`
-3. **Common tweaks** — "raise to 30 or 45" → "15 or 30"; added "Faster response" and "App restart behavior" entries
-4. **How the colors are chosen** — added Step 6 (mood blending) and renumbered; expanded Step 3 with the chroma cap explanation
-5. **Log sample** — `settle=20.0s` → `settle=8.0s`; `wallpaper changed ... settling 20s` → `settling 8s`
-6. **Known issues section** — new. Documents the yasb v2.0.7 issue and how to diagnose it. Documents the concurrent-apply guard log message.
-7. **Build command** — added `--add-data "kamo.ico;."` (needed for the runtime icon to work in the exe)
-8. **Design notes** — added "Why auto-classify hexes" note; updated the settle-timer paragraph from "twenty seconds" to "eight seconds"
-
-Save it, then:
-
-```powershell
-git add README.md
-git commit -m "README: reflect current defaults and behavior"
-git push
