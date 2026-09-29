@@ -2,6 +2,13 @@
   <img src="assets/kamo.png" alt="Kamo" width="160">
   <h1>Kamo</h1>
   <p><em>Kamo is shy. It would rather wear your wallpaper's colors than its own.</em></p>
+  <p>
+    <a href="https://github.com/NitroBeast76/Kamo/releases/latest">
+      <img src="https://img.shields.io/github/v/release/NitroBeast76/Kamo?style=flat-square" alt="Latest release">
+    </a>
+    <img src="https://img.shields.io/badge/platform-Windows-blue?style=flat-square" alt="Platform">
+    <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License">
+  </p>
 </div>
 
 ---
@@ -17,6 +24,48 @@ dialog. There is no first-run wizard asking if you'd like to
 personalize your experience. It reads your wallpaper, decides what
 colors look right, writes them into the apps you already have, and
 then goes back to being invisible.
+
+> I change wallpapers more often than I change clothes. Keeping my
+> rice matching used to be a twenty-minute chore. This is that
+> chore, automated, with a slight preference for OKLCH over RGB
+> because RGB lies.
+
+---
+
+## Contents
+
+- [Supported apps](#supported-apps)
+- [What it does](#what-it-does)
+- [What Kamo is not](#what-kamo-is-not)
+- [Install](#install)
+- [Configuration](#configuration)
+- [How the colors are chosen](#how-the-colors-are-chosen)
+- [Running modes](#running-modes)
+- [The tray menu](#the-tray-menu)
+- [Logs](#logs)
+- [Known issues](#known-issues)
+- [Supported wallpaper engines](#supported-wallpaper-engines)
+- [Writing an adapter](#writing-an-adapter)
+- [Building the .exe](#building-the-exe)
+- [Design notes](#design-notes)
+- [License](#license)
+
+---
+
+## Supported apps
+
+| App | What gets themed | Reload |
+|---|---|---|
+| **yasb** | bar background, text, accents, borders, hover states | restart |
+| **GlazeWM** | focused and unfocused window borders | CLI reload |
+| **Cava** | background, foreground, 8-stop gradient | auto if `live-config=1` |
+| **Chronoterm** | clock digits, date, border, title | restart |
+| **Flow Launcher** | query box, results, selection, scrollbar | restart (opt-in) |
+| **Fastfetch** | logo gradient + module key colors | none (re-read each run) |
+| **Windows Terminal** | full ANSI scheme (20 slots) | automatic |
+
+More apps are one file each. See **Writing an adapter** — it's the
+easiest contribution to this project.
 
 ---
 
@@ -57,23 +106,6 @@ breaking anyone's dotfiles.
 
 ---
 
-## Supported apps
-
-| App | What gets themed | Reload |
-|---|---|---|
-| **yasb** | bar background, text, accents, borders, hover states | restart |
-| **GlazeWM** | focused and unfocused window borders | CLI reload |
-| **Cava** | background, foreground, 8-stop gradient | auto if `live-config=1` |
-| **Chronoterm** | clock digits, date, border, title | restart |
-| **Flow Launcher** | query box, results, selection, scrollbar | restart (opt-in) |
-| **Fastfetch** | logo gradient + module key colors | none (re-read each run) |
-| **Windows Terminal** | full ANSI scheme (20 slots) | automatic |
-
-More apps are one file each. See **Writing an adapter** — it's the
-easiest contribution to this project.
-
----
-
 ## Install
 
 ### Option 1 — the .exe
@@ -102,6 +134,16 @@ Requires Python 3.10 or newer. If you're on 3.11+, `tomllib` is in
 the standard library. On 3.10, `tomli` gets installed as a
 dependency. Kamo doesn't care which one it uses.
 
+### Don't have a rice yet?
+
+Kamo themes apps you already have. If you don't have yasb, GlazeWM,
+cava, chronoterm, and the rest running, there's nothing for Kamo to
+theme. For a ready-made Windows rice that works with Kamo out of the
+box, see [**Windows-Rice**](https://github.com/NitroBeast76/Windows-Rice).
+
+Install the rice first, then drop Kamo on top and let it handle the
+color coordination.
+
 ---
 
 ## Configuration
@@ -116,7 +158,8 @@ menu (**Open config folder**) or directly:
 Every key is optional. Delete a line and the built-in default takes
 over. Delete the whole file and it's regenerated on the next launch.
 
-The full template — the same one Kamo writes on first run:
+<details>
+<summary><b>Full config template</b> (click to expand)</summary>
 
 ```toml
 # Kamo configuration.
@@ -262,6 +305,8 @@ enabled = true
 #   brightWhite = "text",
 # }
 ```
+
+</details>
 
 ### Common tweaks
 
