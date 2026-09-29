@@ -62,7 +62,8 @@ More apps are one file each. See **Writing an adapter** below.
 
 ### Option 1 — the .exe
 
-Download `Kamo.exe`, drop it anywhere, run it. First launch writes
+[Download Kamo.exe](https://github.com/NitroBeast76/Kamo/releases/latest)
+from the releases page. Drop it anywhere, run it. First launch writes
 `%USERPROFILE%\.config\kamo\kamo.toml` and starts watching.
 
 Add a shortcut to `shell:startup` to launch it at login. Or use the
