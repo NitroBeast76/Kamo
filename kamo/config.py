@@ -46,7 +46,7 @@ DEFAULTS: dict[str, Any] = {
         "log_level": "info",    # debug | info | warn | error
     },
     "adapters": {
-        "yasb":            {"enabled": True, "restart": True},
+        "yasb":            {"enabled": True, "restart": False},
         "glazewm":         {"enabled": True, "restart": True},
         "cava":            {"enabled": True},
         "chronoterm":      {"enabled": True, "restart": True},
@@ -85,7 +85,7 @@ log_level     = "info"  # debug | info | warn | error
 
 [adapters.yasb]
 enabled = true
-# restart        = true          # kill + relaunch yasb if running
+# restart        = false         # only needed if watch_stylesheet is off
 # launch_command = ["yasb"]
 # dir          = "~/.config/yasb"
 # colors_file  = "yasb_colors.css"

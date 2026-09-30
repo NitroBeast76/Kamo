@@ -169,7 +169,7 @@ class YasbAdapter(Adapter):
             )
         }
 
-        self.restart = bool(self.cfg_value("restart", True))
+        self.restart = bool(self.cfg_value("restart", False))
         if not self.restart:
             self.process_name = None
 
