@@ -272,15 +272,20 @@ def _pick_primary_accent(
 ) -> tuple[str | None, str]:
     """Pick the primary accent from the raw candidates.
 
-    Only considers candidates with meaningful chroma — a grey
-    wallpaper has no chromatic content, and treating its
-    numerical-artifact "hue" as a real one produces arbitrary
-    accents from the color wheel.
+    Only considers candidates with meaningful chroma — a grey has no
+    hue, and treating its numerical-artifact "hue" as real produces
+    arbitrary accents from the color wheel.
 
-    Prefers the most saturated in-family candidate. If none is
-    within tolerance of the mood hue, falls back to the most
-    saturated chromatic candidate overall. If there are no
-    chromatic candidates at all, returns (None, default blue).
+    If there are chromatic candidates, prefers the most saturated
+    one within tolerance of the mood hue, falling back to the most
+    saturated overall.
+
+    If the wallpaper is fully monochrome (no chromatic candidates
+    at all), returns a neutral from the same lightness band instead
+    of injecting a hue that isn't in the image. The theme is
+    neutral-plus-semantic: greys for base/text/mid-tones, canonical
+    anchors for red/green/blue/etc., and a bright neutral for the
+    highlight accent.
     """
     chromatic: list[tuple[str, float]] = []
     for hex_c, _ in candidates:
@@ -290,7 +295,12 @@ def _pick_primary_accent(
         chromatic.append((hex_c, chroma))
 
     if not chromatic:
-        return None, "#89b4fa"
+        # Monochrome wallpaper. Use a bright neutral as the accent.
+        # L=0.78 sits above the mid-tones, below text, and reads as
+        # a clear highlight against the L=0.16 base without
+        # introducing a hue. C=0 keeps it fully desaturated.
+        neutral_accent = C.oklch_to_hex(0.78, 0.0, mood_hue)
+        return None, neutral_accent
 
     in_family: list[tuple[str, float]] = []
     for hex_c, chroma in chromatic:
@@ -306,7 +316,7 @@ def _pick_primary_accent(
             best, best_chroma = hex_c, chroma
 
     if best is None:
-        return None, "#89b4fa"
+        return None, C.oklch_to_hex(0.78, 0.0, mood_hue)
     return best, _usable_accent(best)
 
 
