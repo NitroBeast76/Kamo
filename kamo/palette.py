@@ -188,65 +188,63 @@ def _assign_accents(candidates: list[tuple[str, float]],
     `exclude` is a set of hexes already assigned elsewhere (typically
     just the primary accent). Colors in it are skipped.
 
-    If the closest available candidate is more than `hue_threshold`
-    degrees from the role's target hue, synthesize at a hue blended
-    toward the wallpaper's mood hue. Otherwise, take the best
-    candidate and clamp it into a usable accent band so it doesn't
-    come back nearly black.
+    For each role, candidates are sorted by (hue distance + chroma
+    distance - prominence). The first candidate whose CLAMPED form
+    is not already used wins. Checking the clamped form matters:
+    `_usable_accent` clamps lightness and chroma but preserves hue,
+    so two different raw candidates with the same hue can clamp to
+    the same hex. Checking only the raw hex would let those through.
 
-    Two guards against duplicate outputs:
-
-        - Picking from candidates: a candidate is skipped if its
-          hex is already in `used` (whether from `exclude` or from
-          a previous role's assignment).
-
-        - Synthesizing: two anchors can blend toward the same mood
-          hue and land on the same blended hue. When that happens,
-          nudge the synthesized hue in small steps until the result
-          is distinct from every other assignment. A 5-15 degree
-          nudge is visually imperceptible but keeps roles
-          distinguishable, which is the whole point of having nine
-          of them.
+    If no candidate within `hue_threshold` degrees has a distinct
+    clamped form, synthesize at a hue blended toward the mood hue.
+    If that synthesized hex collides with one already used, nudge
+    the hue in small steps until it doesn't.
 
     `mood_hue` is the dominant hue of the wallpaper. Synthesized
-    roles blend `MOOD_BLEND` of the way toward it so their hue stays
-    in the wallpaper's color family.
+    roles blend `MOOD_BLEND` of the way toward it.
     """
     used: set[str] = set(exclude or ())
     assigned: dict[str, str] = {}
 
-    # Hue nudges tried, in order, when a synthesized color collides
-    # with one already used. Alternating signs so the result stays
-    # as close to the intended blended hue as possible.
     _NUDGE_STEPS = (5.0, -5.0, 10.0, -10.0, 15.0, -15.0, 20.0, -20.0)
 
     for role, target_hue in HUE_ANCHORS.items():
-        best_raw: str | None = None
-        best_cost = float("inf")
-        best_hue_dist = 999.0
-
+        # Score every available candidate. Lower cost = better fit.
+        scored: list[tuple[float, float, str]] = []
         for hex_c, weight in candidates:
             if hex_c in used:
                 continue
             _, chroma, hue = C.hex_to_oklch(hex_c)
             hd = C.hue_distance(hue, target_hue)
             cost = 3.0 * (hd / 180.0) + 1.0 * abs(chroma - 0.15) - 0.3 * weight
-            if cost < best_cost:
-                best_raw = hex_c
-                best_cost = cost
-                best_hue_dist = hd
+            scored.append((cost, hd, hex_c))
+        scored.sort(key=lambda x: x[0])
 
-        if best_raw is None or best_hue_dist > hue_threshold:
-            # Nothing close enough in the image. Synthesize at a hue
-            # blended toward the mood so the accent stays in the
-            # wallpaper's family instead of anchoring to a fixed
-            # color that looks out of place.
+        # Walk the sorted list. Pick the first candidate that is
+        # (a) close enough to the anchor hue and (b) whose clamped
+        # form is not already used.
+        result: str | None = None
+        picked_raw: str | None = None
+
+        for cost, hd, hex_c in scored:
+            if hd > hue_threshold:
+                # All remaining candidates are worse on hue. Stop.
+                break
+            clamped = _usable_accent(hex_c)
+            if clamped in used:
+                continue
+            result = clamped
+            picked_raw = hex_c
+            break
+
+        if result is None:
+            # No usable candidate. Synthesize at a hue blended toward
+            # the mood so the accent stays in the wallpaper's family.
             blended = _blend_hue(target_hue, mood_hue, MOOD_BLEND)
             result = C.oklch_to_hex(0.62, 0.13, blended)
 
-            # Dedup: if two anchors blended to the same hue, or the
-            # synthesized value collides with an earlier assignment,
-            # nudge the hue until unique.
+            # Dedup: two anchors can blend to the same hue, or the
+            # synthesized value can collide with an earlier role.
             if result in used:
                 for offset in _NUDGE_STEPS:
                     candidate = C.oklch_to_hex(
@@ -256,10 +254,9 @@ def _assign_accents(candidates: list[tuple[str, float]],
                         result = candidate
                         break
         else:
-            result = _usable_accent(best_raw)
-            used.add(best_raw)  # never pick this raw candidate again
+            used.add(picked_raw)
 
-        used.add(result)  # also block the clamped form
+        used.add(result)
         assigned[role] = result
 
     return assigned
