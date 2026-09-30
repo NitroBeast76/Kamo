@@ -286,7 +286,7 @@ class YasbAdapter(Adapter):
         # Pass B: hex literals. Variable writes are visible to this
         # pass so a hex we just wrote to a variable is not
         # re-classified as something else.
-        hex_lookup = {**lookup, **var_written}
+        hex_lookup = {**lookup, **{k.lstrip("#").lower(): v for k, v in var_written.items()}}
         text, hex_changes, hex_mappings = self._substitute_hexes(
             text, theme, hex_lookup
         )
