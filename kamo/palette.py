@@ -194,12 +194,31 @@ def _assign_accents(candidates: list[tuple[str, float]],
     candidate and clamp it into a usable accent band so it doesn't
     come back nearly black.
 
+    Two guards against duplicate outputs:
+
+        - Picking from candidates: a candidate is skipped if its
+          hex is already in `used` (whether from `exclude` or from
+          a previous role's assignment).
+
+        - Synthesizing: two anchors can blend toward the same mood
+          hue and land on the same blended hue. When that happens,
+          nudge the synthesized hue in small steps until the result
+          is distinct from every other assignment. A 5-15 degree
+          nudge is visually imperceptible but keeps roles
+          distinguishable, which is the whole point of having nine
+          of them.
+
     `mood_hue` is the dominant hue of the wallpaper. Synthesized
     roles blend `MOOD_BLEND` of the way toward it so their hue stays
     in the wallpaper's color family.
     """
     used: set[str] = set(exclude or ())
     assigned: dict[str, str] = {}
+
+    # Hue nudges tried, in order, when a synthesized color collides
+    # with one already used. Alternating signs so the result stays
+    # as close to the intended blended hue as possible.
+    _NUDGE_STEPS = (5.0, -5.0, 10.0, -10.0, 15.0, -15.0, 20.0, -20.0)
 
     for role, target_hue in HUE_ANCHORS.items():
         best_raw: str | None = None
@@ -224,6 +243,18 @@ def _assign_accents(candidates: list[tuple[str, float]],
             # color that looks out of place.
             blended = _blend_hue(target_hue, mood_hue, MOOD_BLEND)
             result = C.oklch_to_hex(0.62, 0.13, blended)
+
+            # Dedup: if two anchors blended to the same hue, or the
+            # synthesized value collides with an earlier assignment,
+            # nudge the hue until unique.
+            if result in used:
+                for offset in _NUDGE_STEPS:
+                    candidate = C.oklch_to_hex(
+                        0.62, 0.13, (blended + offset) % 360.0
+                    )
+                    if candidate not in used:
+                        result = candidate
+                        break
         else:
             result = _usable_accent(best_raw)
             used.add(best_raw)  # never pick this raw candidate again
