@@ -43,11 +43,17 @@ and the file would freeze.
 
 Reserved hexes in config are never touched.
 
-Reload: yasb watches styles.css when `watch_stylesheet: true`. But
-its watcher fires on content changes, not mtime, so Kamo rewrites a
-marker comment at the bottom of styles.css on every real change. If
-restart = true (default) and yasb.exe is running, Kamo also kills
-and relaunches it as a fallback.
+Reload: yasb uses Python's watchdog library to watch styles.css.
+watchdog on Windows fires only on FileModifiedEvent, which maps to
+ReadDirectoryChangesW's FILE_ACTION_MODIFIED. That event fires for
+in-place truncating writes but NOT for atomic replace (os.replace),
+which the OS reports as delete+add. So Kamo writes yasb's files
+with write_in_place, not write_text. The in-place variant flushes
+and fsyncs before closing so the watcher can't race the bytes.
+
+If restart = true (default) and yasb.exe is running, Kamo also
+kills and relaunches it as a fallback — some yasb builds disable
+the watcher entirely, and the restart catches that case.
 
 Nothing is written, no marker is bumped, and no restart happens if
 the substitutions produce byte-identical output.
@@ -59,7 +65,13 @@ import re
 import time
 from pathlib import Path
 
-from .base import Adapter, first_existing, read_text, resolve_path, write_text
+from .base import (
+    Adapter,
+    first_existing,
+    read_text,
+    resolve_path,
+    write_in_place,
+)
 from .. import color as C
 from .. import state as state_mod
 from ..theme import Theme
@@ -205,6 +217,7 @@ class YasbAdapter(Adapter):
         changed = False
 
         # 1. yasb_colors.css — always written if different.
+        #    write_in_place so yasb's watchdog sees FILE_ACTION_MODIFIED.
         css = self._render_colors(theme)
         try:
             existing = read_text(colors_path)
@@ -212,7 +225,7 @@ class YasbAdapter(Adapter):
             existing = ""
         if css != existing:
             try:
-                write_text(colors_path, css)
+                write_in_place(colors_path, css)
                 changed = True
                 self.log_info(f"wrote {colors_path.name}")
             except OSError as e:
@@ -294,8 +307,11 @@ class YasbAdapter(Adapter):
             sep = "" if text.endswith("\n") else "\n"
             text = text + sep + marker + "\n"
 
+        # write_in_place, not write_text: yasb's watchdog only fires
+        # on in-place modification events. An atomic replace shows up
+        # as delete+add and the watcher ignores it.
         try:
-            write_text(path, text)
+            write_in_place(path, text)
         except OSError as e:
             self.log_warn(f"could not write {path}: {e}")
             return False

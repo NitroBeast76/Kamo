@@ -232,6 +232,23 @@ def write_text(path: Path, content: str) -> None:
     tmp.write_text(content, encoding="utf-8", newline="\n")
     os.replace(tmp, path)
 
+def write_in_place(path: Path, content: str) -> None:
+    """Write text by truncating the target file in place.
+
+    Some apps use file watchers that only fire on in-place modify
+    events (FILE_ACTION_MODIFIED on Windows). Replacing the file via
+    os.replace produces a delete+add pair instead, which those
+    watchers ignore. yasb's watchdog-based watcher is one of them.
+
+    Use this when the target file is being watched by a running
+    process. Use write_text (atomic) everywhere else — the trade is
+    that a crash mid-write can leave a half-written file, which is
+    why the atomic version is the default.
+    """
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
 
 def write_text_bytes(path: Path, content: bytes) -> None:
     """Same as write_text, but for bytes (e.g. when the target format
