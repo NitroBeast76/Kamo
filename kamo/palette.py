@@ -295,17 +295,22 @@ def _neutral_ramp(mood_hue: float, mood_chroma: float) -> dict[str, str]:
     light), chroma is squashed further, because high chroma at extreme
     lightness reads as "tinted" rather than "dark".
     """
-    # Cap the mood chroma. A vivid wallpaper should tint the neutrals,
-    # not recolor them. 0.10 is high enough to be visible on a bar
-    # or a terminal, low enough to keep text readable.
-    base_chroma = min(mood_chroma, 0.10)
+    # Cap the mood chroma. High enough that the wallpaper's hue is
+    # unmistakable on every role — backgrounds, borders, text, all
+    # of it. Low enough that the contrast floors still pass without
+    # having to move lightness. 0.20 is a deliberate choice in favor
+    # of visible mood over restraint.
+    base_chroma = min(mood_chroma, 0.20)
     out: dict[str, str] = {}
 
     for role, L in NEUTRAL_TARGETS.items():
-        # Fade chroma toward the extremes: full at L=0.5, ~30% at
-        # L=0.1 or L=0.95.
-        span = 1.0 - abs(L - 0.5) * 1.4
-        span = max(0.3, min(1.0, span))
+        # Fade chroma gently toward the extremes. Even at L=0.11
+        # (crust) and L=0.92 (text) we keep most of the mood, because
+        # those are the roles the user actually looks at. A red
+        # wallpaper should give a red-brown base and a warm cream
+        # text, not a grey base and a grey text with a hint of pink.
+        span = 1.0 - abs(L - 0.5) * 0.6
+        span = max(0.65, min(1.0, span))
         chroma = base_chroma * span
         out[role] = C.oklch_to_hex(L, chroma, mood_hue)
 
