@@ -73,6 +73,16 @@ MOOD_BLEND: float = 0.5
 # and the tolerance is 60.
 MOOD_HUE_TOLERANCE: float = 60.0
 
+# Chroma floor below which a color is considered "grey" rather than
+# chromatic. Two uses:
+#   - Candidates below this are skipped during accent assignment.
+#     A grey with no hue shouldn't be assigned to a role whose whole
+#     purpose is to carry a hue.
+#   - If the dominant color is below this, the wallpaper is treated
+#     as monochrome: synthesized accents use their raw anchors
+#     instead of being blended toward a meaningless mood hue.
+MONOCHROME_THRESHOLD: float = 0.03
+
 # Usable accent band. Any color pulled from the image for a semantic
 # or primary role gets clamped into this range, so highlights stay
 # readable against a dark base and don't blow out against a light one.
@@ -182,26 +192,23 @@ def _assign_accents(candidates: list[tuple[str, float]],
                     mood_hue: float,
                     exclude: set[str] | None = None,
                     hue_threshold: float = HUE_SYNTHESIS_THRESHOLD,
+                    mood_blend: float = MOOD_BLEND,
                     ) -> dict[str, str]:
     """Pick one source color per semantic role. Never reuses a color.
 
-    `exclude` is a set of hexes already assigned elsewhere (typically
-    just the primary accent). Colors in it are skipped.
+    Grey candidates (chroma below MONOCHROME_THRESHOLD) are skipped:
+    a color with no meaningful chroma can't represent a hue, and
+    assigning one to an accent role produces the wrong hex.
 
-    For each role, candidates are sorted by (hue distance + chroma
-    distance - prominence). The first candidate whose CLAMPED form
-    is not already used wins. Checking the clamped form matters:
-    `_usable_accent` clamps lightness and chroma but preserves hue,
-    so two different raw candidates with the same hue can clamp to
-    the same hex. Checking only the raw hex would let those through.
+    When no candidate for a role is chromatic and close enough to
+    the anchor hue, the role is synthesized at a hue partway between
+    its anchor and the wallpaper's mood hue. The `mood_blend`
+    parameter controls how far toward the mood: 0.0 disables
+    blending entirely, which is what monochrome wallpapers use so
+    their synthesized roles land on canonical anchors.
 
-    If no candidate within `hue_threshold` degrees has a distinct
-    clamped form, synthesize at a hue blended toward the mood hue.
-    If that synthesized hex collides with one already used, nudge
-    the hue in small steps until it doesn't.
-
-    `mood_hue` is the dominant hue of the wallpaper. Synthesized
-    roles blend `MOOD_BLEND` of the way toward it.
+    If the synthesized value collides with one already assigned,
+    the hue is nudged in small steps until it doesn't.
     """
     used: set[str] = set(exclude or ())
     assigned: dict[str, str] = {}
@@ -209,26 +216,26 @@ def _assign_accents(candidates: list[tuple[str, float]],
     _NUDGE_STEPS = (5.0, -5.0, 10.0, -10.0, 15.0, -15.0, 20.0, -20.0)
 
     for role, target_hue in HUE_ANCHORS.items():
-        # Score every available candidate. Lower cost = better fit.
         scored: list[tuple[float, float, str]] = []
         for hex_c, weight in candidates:
             if hex_c in used:
                 continue
             _, chroma, hue = C.hex_to_oklch(hex_c)
+            # Skip greys. Monochrome wallpapers end up with an empty
+            # scored list and fall through to synthesis for every
+            # role, which is the correct behavior.
+            if chroma < MONOCHROME_THRESHOLD:
+                continue
             hd = C.hue_distance(hue, target_hue)
             cost = 3.0 * (hd / 180.0) + 1.0 * abs(chroma - 0.15) - 0.3 * weight
             scored.append((cost, hd, hex_c))
         scored.sort(key=lambda x: x[0])
 
-        # Walk the sorted list. Pick the first candidate that is
-        # (a) close enough to the anchor hue and (b) whose clamped
-        # form is not already used.
         result: str | None = None
         picked_raw: str | None = None
 
         for cost, hd, hex_c in scored:
             if hd > hue_threshold:
-                # All remaining candidates are worse on hue. Stop.
                 break
             clamped = _usable_accent(hex_c)
             if clamped in used:
@@ -238,13 +245,9 @@ def _assign_accents(candidates: list[tuple[str, float]],
             break
 
         if result is None:
-            # No usable candidate. Synthesize at a hue blended toward
-            # the mood so the accent stays in the wallpaper's family.
-            blended = _blend_hue(target_hue, mood_hue, MOOD_BLEND)
+            blended = _blend_hue(target_hue, mood_hue, mood_blend)
             result = C.oklch_to_hex(0.62, 0.13, blended)
 
-            # Dedup: two anchors can blend to the same hue, or the
-            # synthesized value can collide with an earlier role.
             if result in used:
                 for offset in _NUDGE_STEPS:
                     candidate = C.oklch_to_hex(
@@ -269,30 +272,33 @@ def _pick_primary_accent(
 ) -> tuple[str | None, str]:
     """Pick the primary accent from the raw candidates.
 
-    Prefers the most saturated candidate whose hue is within
-    `hue_tolerance` degrees of the mood hue. A purple-dominant
-    wallpaper with one bright orange element gets a purple accent,
-    because the orange is far outside the mood's color family.
+    Only considers candidates with meaningful chroma — a grey
+    wallpaper has no chromatic content, and treating its
+    numerical-artifact "hue" as a real one produces arbitrary
+    accents from the color wheel.
 
-    If nothing in the image is within tolerance, falls back to the
-    most saturated candidate overall.
-
-    Returns (raw_source, clamped_result). The raw source is returned
-    so the caller can exclude it from subsequent role assignment.
-    Without that, a semantic role with a nearby hue can re-pick the
-    same source color and produce an identical hex after clamping.
-
-    Falls back to (None, "#89b4fa") if the image is pure grey.
+    Prefers the most saturated in-family candidate. If none is
+    within tolerance of the mood hue, falls back to the most
+    saturated chromatic candidate overall. If there are no
+    chromatic candidates at all, returns (None, default blue).
     """
-    in_family: list[tuple[str, float]] = []
+    chromatic: list[tuple[str, float]] = []
     for hex_c, _ in candidates:
-        _, chroma, hue = C.hex_to_oklch(hex_c)
+        _, chroma, _ = C.hex_to_oklch(hex_c)
+        if chroma < MONOCHROME_THRESHOLD:
+            continue
+        chromatic.append((hex_c, chroma))
+
+    if not chromatic:
+        return None, "#89b4fa"
+
+    in_family: list[tuple[str, float]] = []
+    for hex_c, chroma in chromatic:
+        _, _, hue = C.hex_to_oklch(hex_c)
         if C.hue_distance(hue, mood_hue) <= hue_tolerance:
             in_family.append((hex_c, chroma))
 
-    pool = in_family if in_family else [
-        (h, C.hex_to_oklch(h)[1]) for h, _ in candidates
-    ]
+    pool = in_family if in_family else chromatic
 
     best, best_chroma = None, -1.0
     for hex_c, chroma in pool:
@@ -400,20 +406,25 @@ def _from_candidates(candidates: list[tuple[str, float]]) -> Theme:
     dominant_hex, _ = candidates[0]
     _, dominant_chroma, dominant_hue = C.hex_to_oklch(dominant_hex)
 
+    # Monochrome wallpapers have a dominant hue that is a numerical
+    # artifact of hex_to_oklch on grey (it always returns 89.9 for
+    # pure greys). Blending synthesized accents toward that hue
+    # produces arbitrary colors. Disable blending entirely so
+    # synthesized accents land on their canonical anchors.
+    monochrome = dominant_chroma < MONOCHROME_THRESHOLD
+
     neutrals = _neutral_ramp(dominant_hue, dominant_chroma)
     neutrals = _apply_contrast_floors(neutrals)
 
-    # Accent first, restricted to the mood's hue family so a purple
-    # wallpaper doesn't get an orange accent just because of one
-    # bright focal element. Exclude both its raw source and its
-    # clamped form from role assignment; otherwise a semantic role
-    # with a nearby hue can re-pick the same source and produce an
-    # identical hex after clamping.
     accent_raw, accent = _pick_primary_accent(candidates, dominant_hue)
     exclude: set[str] = {accent}
     if accent_raw:
         exclude.add(accent_raw)
-    accents = _assign_accents(candidates, dominant_hue, exclude=exclude)
+
+    blend = 0.0 if monochrome else MOOD_BLEND
+    accents = _assign_accents(
+        candidates, dominant_hue, exclude=exclude, mood_blend=blend,
+    )
     accent_text = _accent_text(accent)
 
     return _assemble(neutrals, accents, accent, accent_text)
